@@ -1,8 +1,8 @@
 const asyncHandler = require('express-async-handler');
-const DataEntry = require('../../models/DataEntry');
-const logger = require('../../utils/logger');
-const { sequelize } = require('../../db/connection');
-const { getRedisClient } = require('../../services/redis');
+const DataEntry = require('../models/DataEntry');
+const logger = require('../utils/logger');
+const { sequelize } = require('../db/connection');
+const { getRedisClient } = require('../services/redis');
 
 /**
  * Create a new data entry
