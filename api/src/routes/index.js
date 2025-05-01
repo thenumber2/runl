@@ -1,4 +1,4 @@
-const dataController = require('../api/controllers/dataController');
+const dataController = require('../controllers/dataController');
 const { validate, dataEntrySchema, batchDataEntrySchema } = require('../middleware/validation');
 const { cacheMiddleware } = require('../services/redis');
 
