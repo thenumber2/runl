@@ -3,6 +3,7 @@ const validate = require('../middleware/validation');
 const { eventSchema } = require('../middleware/eventValidation');
 const { cacheMiddleware } = require('../services/redis');
 const apiKeyAuth = require('../middleware/auth');
+const { sanitizeJsonPaths } = require('../middleware/sanitization');
 
 // Setup event routes
 const setupEventRoutes = (apiRouter) => {
@@ -10,8 +11,10 @@ const setupEventRoutes = (apiRouter) => {
   const eventRouter = require('express').Router();
   eventRouter.use(apiKeyAuth);
   
-  // Log event endpoint
+  // Log event endpoint with targeted sanitization for specific fields
   eventRouter.post('/', 
+    // Sanitize specific JSON paths that might contain user input with HTML
+    sanitizeJsonPaths(['properties.message', 'properties.userInput', 'properties.description']),
     validate(eventSchema), 
     eventController.logEvent
   );

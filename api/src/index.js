@@ -8,6 +8,7 @@ const { setupRoutes } = require('./routes');
 const { connectToDatabase } = require('./db/connection');
 const { setupRedis } = require('./services/redis');
 const logger = require('./utils/logger');
+const { sanitizeMiddleware } = require('./middleware/sanitization'); // Import sanitization middleware
 
 // Initialize Express app
 const app = express();
@@ -19,6 +20,9 @@ app.use(cors()); // Enable CORS
 app.use(express.json({ limit: '10mb' })); // Parse JSON requests
 app.use(express.urlencoded({ extended: true, limit: '10mb' })); // Parse URL-encoded requests
 app.use(morgan('combined')); // Request logging
+
+// Add sanitization middleware - must be after body parsing but before routes
+app.use(sanitizeMiddleware); // Apply sanitization to all routes
 
 // Rate limiting
 const limiter = rateLimit({
