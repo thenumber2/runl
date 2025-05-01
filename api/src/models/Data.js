@@ -2,7 +2,7 @@ const { DataTypes } = require('sequelize');
 const { sequelize } = require('../db/connection');
 
 // Create a generic DataEntry model that can be customized based on your needs
-const DataEntry = sequelize.define('DataEntry', {
+const Data = sequelize.define('DataEntry', {
   id: {
     type: DataTypes.UUID,
     defaultValue: DataTypes.UUIDV4,
@@ -53,4 +53,4 @@ const DataEntry = sequelize.define('DataEntry', {
   ]
 });
 
-module.exports = DataEntry;
+module.exports = Data;

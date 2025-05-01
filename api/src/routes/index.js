@@ -1,8 +1,6 @@
-const dataController = require('../controllers/dataController');
-const { validate, dataEntrySchema, batchDataEntrySchema } = require('../middleware/validation');
-const { cacheMiddleware } = require('../services/redis');
-const apiKeyAuth = require('../middleware/auth');
-const schemaRoutes = require('./schemaRoutes');
+const setupSchemaRoutes = require('./schemaRoutes');
+const setupDataRoutes = require('./dataRoutes');
+const setupEventRoutes = require('./eventRoutes');
 
 // Setup all routes
 const setupRoutes = (app) => {
@@ -16,44 +14,10 @@ const setupRoutes = (app) => {
     });
   });
   
-  // Data entry routes with API key authentication
-  apiRouter.post('/data', 
-    apiKeyAuth,
-    validate(dataEntrySchema), 
-    dataController.createDataEntry
-  );
-  
-  apiRouter.post('/data/batch', 
-    apiKeyAuth,
-    validate(batchDataEntrySchema), 
-    dataController.createBatchDataEntries
-  );
-  
-  apiRouter.get('/data', 
-    apiKeyAuth,
-    cacheMiddleware(60), // Cache for 1 minute
-    dataController.getDataEntries
-  );
-  
-  apiRouter.get('/data/:id', 
-    apiKeyAuth,
-    cacheMiddleware(60), // Cache for 1 minute
-    dataController.getDataEntryById
-  );
-  
-  apiRouter.put('/data/:id', 
-    apiKeyAuth,
-    validate(dataEntrySchema), 
-    dataController.updateDataEntry
-  );
-  
-  apiRouter.delete('/data/:id', 
-    apiKeyAuth,
-    dataController.deleteDataEntry
-  );
-  
-  // Admin schema management routes
-  apiRouter.use('/admin/schema', schemaRoutes);
+  // Setup modular route handlers
+  setupDataRoutes(apiRouter);
+  setupEventRoutes(apiRouter);
+  setupSchemaRoutes(apiRouter);
   
   // Mount all routes with /api prefix
   app.use('/api', apiRouter);

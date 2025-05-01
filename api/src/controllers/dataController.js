@@ -1,17 +1,17 @@
 const asyncHandler = require('express-async-handler');
-const DataEntry = require('../models/DataEntry');
+const Data = require('../models/Data');
 const logger = require('../utils/logger');
 const { sequelize } = require('../db/connection');
 const { getRedisClient } = require('../services/redis');
 
 /**
- * Create a new data entry
+ * Create a new data record
  * @route POST /api/data
  */
-const createDataEntry = asyncHandler(async (req, res) => {
-  const dataEntry = await DataEntry.create(req.body);
+const createData = asyncHandler(async (req, res) => {
+  const data = await Data.create(req.body);
   
-  logger.info(`Created new data entry with ID: ${dataEntry.id}`);
+  logger.info(`Created new data record with ID: ${data.id}`);
   
   // Invalidate relevant cache keys
   const redisClient = getRedisClient();
@@ -21,20 +21,20 @@ const createDataEntry = asyncHandler(async (req, res) => {
   
   res.status(201).json({
     success: true,
-    data: dataEntry
+    data
   });
 });
 
 /**
- * Create multiple data entries in a single transaction
+ * Create multiple data records in a single transaction
  * @route POST /api/data/batch
  */
-const createBatchDataEntries = asyncHandler(async (req, res) => {
+const createBatchData = asyncHandler(async (req, res) => {
   const { entries } = req.body;
   
   // Use a transaction to ensure all entries are created or none
   const result = await sequelize.transaction(async (t) => {
-    const createdEntries = await DataEntry.bulkCreate(entries, { 
+    const createdEntries = await Data.bulkCreate(entries, { 
       transaction: t,
       returning: true
     });
@@ -42,7 +42,7 @@ const createBatchDataEntries = asyncHandler(async (req, res) => {
     return createdEntries;
   });
   
-  logger.info(`Created ${result.length} data entries in batch`);
+  logger.info(`Created ${result.length} data records in batch`);
   
   // Invalidate relevant cache keys
   const redisClient = getRedisClient();
@@ -58,10 +58,10 @@ const createBatchDataEntries = asyncHandler(async (req, res) => {
 });
 
 /**
- * Get all data entries with pagination
+ * Get all data records with pagination
  * @route GET /api/data
  */
-const getDataEntries = asyncHandler(async (req, res) => {
+const getAllData = asyncHandler(async (req, res) => {
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 20;
   const offset = (page - 1) * limit;
@@ -74,7 +74,7 @@ const getDataEntries = asyncHandler(async (req, res) => {
   }
   
   // Query with pagination
-  const { count, rows } = await DataEntry.findAndCountAll({
+  const { count, rows } = await Data.findAndCountAll({
     where: whereClause,
     limit,
     offset,
@@ -91,39 +91,39 @@ const getDataEntries = asyncHandler(async (req, res) => {
 });
 
 /**
- * Get a single data entry by ID
+ * Get a single data record by ID
  * @route GET /api/data/:id
  */
-const getDataEntryById = asyncHandler(async (req, res) => {
-  const dataEntry = await DataEntry.findByPk(req.params.id);
+const getDataById = asyncHandler(async (req, res) => {
+  const data = await Data.findByPk(req.params.id);
   
-  if (!dataEntry) {
+  if (!data) {
     res.status(404);
-    throw new Error('Data entry not found');
+    throw new Error('Data record not found');
   }
   
   res.json({
     success: true,
-    data: dataEntry
+    data
   });
 });
 
 /**
- * Update a data entry
+ * Update a data record
  * @route PUT /api/data/:id
  */
-const updateDataEntry = asyncHandler(async (req, res) => {
-  const dataEntry = await DataEntry.findByPk(req.params.id);
+const updateData = asyncHandler(async (req, res) => {
+  const data = await Data.findByPk(req.params.id);
   
-  if (!dataEntry) {
+  if (!data) {
     res.status(404);
-    throw new Error('Data entry not found');
+    throw new Error('Data record not found');
   }
   
-  // Update the entry
-  await dataEntry.update(req.body);
+  // Update the record
+  await data.update(req.body);
   
-  logger.info(`Updated data entry with ID: ${dataEntry.id}`);
+  logger.info(`Updated data record with ID: ${data.id}`);
   
   // Invalidate relevant cache keys
   const redisClient = getRedisClient();
@@ -134,25 +134,25 @@ const updateDataEntry = asyncHandler(async (req, res) => {
   
   res.json({
     success: true,
-    data: dataEntry
+    data
   });
 });
 
 /**
- * Delete a data entry
+ * Delete a data record
  * @route DELETE /api/data/:id
  */
-const deleteDataEntry = asyncHandler(async (req, res) => {
-  const dataEntry = await DataEntry.findByPk(req.params.id);
+const deleteData = asyncHandler(async (req, res) => {
+  const data = await Data.findByPk(req.params.id);
   
-  if (!dataEntry) {
+  if (!data) {
     res.status(404);
-    throw new Error('Data entry not found');
+    throw new Error('Data record not found');
   }
   
-  await dataEntry.destroy();
+  await data.destroy();
   
-  logger.info(`Deleted data entry with ID: ${dataEntry.id}`);
+  logger.info(`Deleted data record with ID: ${data.id}`);
   
   // Invalidate relevant cache keys
   const redisClient = getRedisClient();
@@ -163,15 +163,15 @@ const deleteDataEntry = asyncHandler(async (req, res) => {
   
   res.json({
     success: true,
-    message: 'Data entry deleted successfully'
+    message: 'Data record deleted successfully'
   });
 });
 
 module.exports = {
-  createDataEntry,
-  createBatchDataEntries,
-  getDataEntries,
-  getDataEntryById,
-  updateDataEntry,
-  deleteDataEntry
+  createData,
+  createBatchData,
+  getAllData,
+  getDataById,
+  updateData,
+  deleteData
 };
