@@ -188,7 +188,7 @@ const createTable = asyncHandler(async (req, res) => {
 });
 
 /**
- * Create a predefined table from a template
+ * Create a predefined table from a template with enhanced security
  * @route POST /api/admin/schema/templates/:templateName
  */
 const createTableFromTemplate = asyncHandler(async (req, res) => {
@@ -205,6 +205,15 @@ const createTableFromTemplate = asyncHandler(async (req, res) => {
     const templatesDir = path.join(__dirname, '../templates');
     const templateFile = path.join(templatesDir, `${templateName}.sql`);
     
+    // Prevent path traversal by comparing resolved paths
+    const resolvedTemplatePath = path.resolve(templateFile);
+    const resolvedTemplatesDir = path.resolve(templatesDir);
+    
+    if (!resolvedTemplatePath.startsWith(resolvedTemplatesDir)) {
+      res.status(403);
+      throw new Error('Template access forbidden');
+    }
+    
     // Try to read the template file
     let sql;
     try {
@@ -217,18 +226,62 @@ const createTableFromTemplate = asyncHandler(async (req, res) => {
       throw err;
     }
     
-    // Execute the SQL template
-    await sequelize.query(sql);
+    // Start a transaction
+    const transaction = await sequelize.transaction();
     
-    logger.info(`Template '${templateName}' executed successfully`);
-    
-    res.status(201).json({
-      success: true,
-      message: `Template '${templateName}' executed successfully`,
-      templateName
-    });
+    try {
+      // Execute the SQL template
+      await sequelize.query(sql, { transaction });
+      
+      // Verify we can query the created table (if it's a CREATE TABLE statement)
+      // This helps validate the template executed successfully
+      const tableMatch = sql.match(/CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+(\w+)/i);
+      if (tableMatch && tableMatch[1]) {
+        const tableName = tableMatch[1].replace(/['"]/g, ''); // Remove any quotes
+        
+        // Check if the table exists and is accessible
+        const tableExists = await sequelize.query(`
+          SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_schema = 'public' AND table_name = :tableName
+          )
+        `, { 
+          replacements: { tableName },
+          type: sequelize.QueryTypes.SELECT,
+          transaction
+        });
+        
+        if (!tableExists[0].exists) {
+          // Table doesn't exist after executing the template
+          await transaction.rollback();
+          res.status(500);
+          throw new Error(`Template execution failed: Table '${tableName}' was not created`);
+        }
+      }
+      
+      // Commit transaction
+      await transaction.commit();
+      
+      logger.info(`Template '${templateName}' executed successfully`);
+      
+      res.status(201).json({
+        success: true,
+        message: `Template '${templateName}' executed successfully`,
+        templateName
+      });
+    } catch (error) {
+      // Rollback transaction on error
+      await transaction.rollback();
+      logger.error(`Error executing template '${templateName}':`, error);
+      
+      res.status(500);
+      throw new Error(`Failed to execute template: ${error.message}`);
+    }
   } catch (error) {
-    res.status(500);
+    // Catch any errors not caught in inner try/catch
+    if (!res.statusCode || res.statusCode === 200) {
+      res.status(500);
+    }
     throw new Error(`Failed to execute template: ${error.message}`);
   }
 });

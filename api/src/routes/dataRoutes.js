@@ -1,5 +1,5 @@
 const dataController = require('../controllers/dataController');
-const validate = require('../middleware/validationMiddleware');
+const validate = require('../middleware/validation');
 const { dataSchema, batchDataSchema } = require('../middleware/dataValidation');
 const { cacheMiddleware } = require('../services/redis');
 const apiKeyAuth = require('../middleware/auth');
