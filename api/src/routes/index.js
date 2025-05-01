@@ -2,6 +2,7 @@ const dataController = require('../controllers/dataController');
 const { validate, dataEntrySchema, batchDataEntrySchema } = require('../middleware/validation');
 const { cacheMiddleware } = require('../services/redis');
 const apiKeyAuth = require('../middleware/auth');
+const schemaRoutes = require('./schemaRoutes');
 
 // Setup all routes
 const setupRoutes = (app) => {
@@ -50,6 +51,9 @@ const setupRoutes = (app) => {
     apiKeyAuth,
     dataController.deleteDataEntry
   );
+  
+  // Admin schema management routes
+  apiRouter.use('/admin/schema', schemaRoutes);
   
   // Mount all routes with /api prefix
   app.use('/api', apiRouter);
