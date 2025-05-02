@@ -30,7 +30,11 @@ app.use(defaultRateLimiter);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.status(200).send({ status: 'UP', timestamp: new Date() });
+  res.status(200).json({
+    status: 'UP',
+    apiVersion: '1.0.0', // Add API version
+    timestamp: new Date(),
+  });
 });
 
 // Setup API routes
