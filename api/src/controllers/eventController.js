@@ -33,15 +33,24 @@ const logEvent = asyncHandler(async (req, res) => {
       // This is intentionally done after the transaction commits
       // to ensure the event is recorded regardless of forwarding success
       try {
-        // Process the event through the webhook forwarder
-        const forwardResults = await webhookForwarder.processEvent(event);
-        
-        if (forwardResults.length > 0) {
-          logger.debug(`Event forwarded to ${forwardResults.length} destinations`, {
+        // Check if webhookForwarder is properly initialized
+        if (webhookForwarder && typeof webhookForwarder.processEvent === 'function') {
+          // Process the event through the webhook forwarder
+          const forwardResults = await webhookForwarder.processEvent(event);
+          
+          if (forwardResults && forwardResults.length > 0) {
+            logger.debug(`Event forwarded to ${forwardResults.length} destinations`, {
+              eventId: event.id,
+              eventName,
+              successCount: forwardResults.filter(r => r.success).length,
+              failureCount: forwardResults.filter(r => !r.success).length
+            });
+          }
+        } else {
+          logger.warn('Event forwarding skipped - webhookForwarder not properly initialized', {
             eventId: event.id,
             eventName,
-            successCount: forwardResults.filter(r => r.success).length,
-            failureCount: forwardResults.filter(r => !r.success).length
+            webhookForwarderType: typeof webhookForwarder
           });
         }
       } catch (forwardError) {

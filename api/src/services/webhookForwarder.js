@@ -783,3 +783,5 @@ class WebhookForwarder {
     };
   }
 }
+
+module.exports = new WebhookForwarder();
