@@ -1,7 +1,7 @@
 const dataController = require('../controllers/dataController');
 const validate = require('../middleware/validation');
 const { dataSchema, batchDataSchema } = require('../middleware/dataValidation');
-const { cacheMiddleware } = require('../services/redis');
+const redisService = require('../services/redis');
 const apiKeyAuth = require('../middleware/auth');
 
 // Setup data routes
@@ -23,14 +23,14 @@ const setupDataRoutes = (apiRouter) => {
   );
   
   // Get all data records with pagination
+  // Cache is now implemented in the controller using redisOps.getWithFallback
   dataRouter.get('/', 
-    cacheMiddleware(60), // Cache for 1 minute
     dataController.getAllData
   );
   
   // Get a single data record by ID
+  // Cache is now implemented in the controller using redisOps.getWithFallback
   dataRouter.get('/:id', 
-    cacheMiddleware(60), // Cache for 1 minute
     dataController.getDataById
   );
   

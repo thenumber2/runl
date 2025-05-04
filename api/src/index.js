@@ -5,7 +5,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const { setupRoutes } = require('./routes');
 const { connectToDatabase } = require('./db/connection');
-const { setupRedis } = require('./services/redis');
+const redisService = require('./services/redis');
 const logger = require('./utils/logger');
 const { sanitizeMiddleware } = require('./middleware/sanitization');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
@@ -66,6 +66,7 @@ app.get('/health', (req, res) => {
     status: 'UP',
     apiVersion: '1.0.0', // Add API version
     timestamp: new Date(),
+    redis: redisService.isRedisConnected() ? 'Connected' : 'Disconnected',
   });
 });
 
@@ -84,8 +85,16 @@ async function startServer() {
     // Connect to PostgreSQL
     await connectToDatabase();
     
-    // Connect to Redis
-    await setupRedis();
+    // Configure and connect to Redis with improved service
+    await redisService
+      .configure({
+        host: process.env.REDIS_HOST || 'redis',
+        port: process.env.REDIS_PORT || 6379,
+        maxReconnectAttempts: 10,
+        initialBackoff: 100,
+        maxBackoff: 10000
+      })
+      .connect();
     
     // Initialize event forwarding system components in the correct order
     logger.info('Initializing event forwarding system...');
@@ -128,7 +137,12 @@ process.on('SIGINT', gracefulShutdown);
 async function gracefulShutdown() {
   logger.info('Received shutdown signal, closing connections gracefully...');
   
-  // Close server and connections (implement actual cleanup as needed)
+  // Gracefully close Redis connection
+  await redisService.disconnect();
+  
+  // Close other connections as needed
+  // TODO: Add proper shutdown for other services (database, etc.)
+  
   process.exit(0);
 }
 

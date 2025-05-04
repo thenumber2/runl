@@ -2,7 +2,8 @@ const asyncHandler = require('express-async-handler');
 const Data = require('../models/Data');
 const logger = require('../utils/logger');
 const { sequelize } = require('../db/connection');
-const { getRedisClient } = require('../services/redis');
+const redisService = require('../services/redis');
+const redisOps = require('../services/redis-failsafe-ops');
 
 /**
  * Create a new data record
@@ -13,11 +14,8 @@ const createData = asyncHandler(async (req, res) => {
   
   logger.info(`Created new data record with ID: ${data.id}`);
   
-  // Invalidate relevant cache keys
-  const redisClient = getRedisClient();
-  if (redisClient?.isOpen) {
-    await redisClient.del('api:/api/data');
-  }
+  // Invalidate relevant cache keys using the pattern-based approach
+  await redisOps.invalidatePatterns(['api:/api/data']);
   
   res.status(201).json({
     success: true,
@@ -45,10 +43,7 @@ const createBatchData = asyncHandler(async (req, res) => {
   logger.info(`Created ${result.length} data records in batch`);
   
   // Invalidate relevant cache keys
-  const redisClient = getRedisClient();
-  if (redisClient?.isOpen) {
-    await redisClient.del('api:/api/data');
-  }
+  await redisOps.invalidatePatterns(['api:/api/data']);
   
   res.status(201).json({
     success: true,
@@ -73,21 +68,33 @@ const getAllData = asyncHandler(async (req, res) => {
     whereClause.status = status;
   }
   
-  // Query with pagination
-  const { count, rows } = await Data.findAndCountAll({
-    where: whereClause,
-    limit,
-    offset,
-    order: [['createdAt', 'DESC']]
-  });
+  // Create cache key based on query parameters
+  const cacheKey = `api:/api/data?page=${page}&limit=${limit}${status ? `&status=${status}` : ''}`;
   
-  res.json({
-    success: true,
-    count,
-    totalPages: Math.ceil(count / limit),
-    currentPage: page,
-    data: rows
-  });
+  // Use getWithFallback for reliable caching
+  const result = await redisOps.getWithFallback(
+    cacheKey,
+    async () => {
+      // Query with pagination
+      const { count, rows } = await Data.findAndCountAll({
+        where: whereClause,
+        limit,
+        offset,
+        order: [['createdAt', 'DESC']]
+      });
+      
+      return {
+        success: true,
+        count,
+        totalPages: Math.ceil(count / limit),
+        currentPage: page,
+        data: rows
+      };
+    },
+    { ttl: 60 } // Cache for 1 minute
+  );
+  
+  res.json(result);
 });
 
 /**
@@ -95,17 +102,34 @@ const getAllData = asyncHandler(async (req, res) => {
  * @route GET /api/data/:id
  */
 const getDataById = asyncHandler(async (req, res) => {
-  const data = await Data.findByPk(req.params.id);
+  const id = req.params.id;
+  const cacheKey = `api:/api/data/${id}`;
   
-  if (!data) {
+  // Use getWithFallback for reliable caching
+  const result = await redisOps.getWithFallback(
+    cacheKey,
+    async () => {
+      const data = await Data.findByPk(id);
+      
+      if (!data) {
+        return null; // Let the controller handle the not found case
+      }
+      
+      return {
+        success: true,
+        data
+      };
+    },
+    { ttl: 300 } // Cache for 5 minutes
+  );
+  
+  // Handle not found case
+  if (!result) {
     res.status(404);
     throw new Error('Data record not found');
   }
   
-  res.json({
-    success: true,
-    data
-  });
+  res.json(result);
 });
 
 /**
@@ -125,12 +149,11 @@ const updateData = asyncHandler(async (req, res) => {
   
   logger.info(`Updated data record with ID: ${data.id}`);
   
-  // Invalidate relevant cache keys
-  const redisClient = getRedisClient();
-  if (redisClient?.isOpen) {
-    await redisClient.del(`api:/api/data/${req.params.id}`);
-    await redisClient.del('api:/api/data');
-  }
+  // Invalidate both specific and list cache entries
+  await redisOps.invalidatePatterns([
+    `api:/api/data/${req.params.id}`,
+    'api:/api/data*'
+  ]);
   
   res.json({
     success: true,
@@ -154,12 +177,11 @@ const deleteData = asyncHandler(async (req, res) => {
   
   logger.info(`Deleted data record with ID: ${data.id}`);
   
-  // Invalidate relevant cache keys
-  const redisClient = getRedisClient();
-  if (redisClient?.isOpen) {
-    await redisClient.del(`api:/api/data/${req.params.id}`);
-    await redisClient.del('api:/api/data');
-  }
+  // Invalidate both specific and list cache entries
+  await redisOps.invalidatePatterns([
+    `api:/api/data/${req.params.id}`,
+    'api:/api/data*'
+  ]);
   
   res.json({
     success: true,
