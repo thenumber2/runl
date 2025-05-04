@@ -35,13 +35,26 @@ const Event = sequelize.define('Event', {
       fields: ['timestamp']
     },
     {
-      // JSONB path index for userId
+      // JSONB path index for userId using a safer approach
       name: 'events_user_id_idx',
+      using: 'gin',
       fields: [
-        sequelize.literal('((properties->>\'userId\'))::text')
+        sequelize.fn('jsonb_path_ops', sequelize.col('properties'))
       ]
     }
   ]
 });
+
+// Add an additional method to easily find events by userId
+Event.findByUserId = function(userId, options = {}) {
+  return this.findAll({
+    where: sequelize.where(
+      sequelize.json('properties.userId'),
+      '=',
+      userId
+    ),
+    ...options
+  });
+};
 
 module.exports = Event;

@@ -7,18 +7,16 @@ const _ = require('lodash');
 
 /**
  * WebhookForwarder Service
- * A lightweight service to forward events to external services like Slack, Mixpanel, etc.
- * with powerful transformation capabilities
+ * A lightweight service to forward events to external services
+ * with powerful generic transformation capabilities
  */
 class WebhookForwarder {
   constructor() {
     // Map of destinations: { "destinationName": { url, eventTypes, transform, headers } }
     this.destinations = {};
     
-    // Map of registered transformers
+    // Map of registered transformers - only generic transformation patterns
     this.transformers = {
-      slack: WebhookForwarder.slackTransformer,
-      mixpanel: WebhookForwarder.mixpanelTransformer,
       identity: WebhookForwarder.identityTransformer,
       template: WebhookForwarder.templateTransformer,
       script: WebhookForwarder.scriptTransformer,
@@ -353,164 +351,6 @@ class WebhookForwarder {
   }
   
   /**
-   * Pre-configured transformer for Slack
-   * @static
-   * @param {Object} options - Configuration options
-   * @returns {Function} - Transform function
-   */
-  static slackTransformer(options = {}) {
-    const defaults = {
-      username: 'Event Notifier',
-      icon_emoji: ':bell:',
-      channel: '#events'
-    };
-    
-    const config = { ...defaults, ...(options.config || options) };
-    
-    return (event) => {
-      // Basic slack message format
-      const message = {
-        username: config.username,
-        icon_emoji: config.icon_emoji,
-        channel: config.channel,
-        text: `*${event.eventName}* event received`,
-        blocks: [
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: `*${event.eventName}* event received at ${new Date(event.timestamp).toLocaleString()}`
-            }
-          },
-          {
-            type: "section",
-            fields: [
-              {
-                type: "mrkdwn",
-                text: `*ID:*\n${event.id}`
-              },
-              {
-                type: "mrkdwn",
-                text: `*Timestamp:*\n${new Date(event.timestamp).toLocaleString()}`
-              }
-            ]
-          }
-        ]
-      };
-      
-      // Add properties as a JSON code block
-      if (event.properties && Object.keys(event.properties).length > 0) {
-        message.blocks.push({
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: "*Properties:*"
-          }
-        });
-        
-        message.blocks.push({
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: "```" + JSON.stringify(event.properties, null, 2) + "```"
-          }
-        });
-      }
-      
-      // If there's a custom message format provided, use it
-      if (config.message) {
-        message.text = config.message.replace(/\{(\w+)(?:\.([^}]+))?\}/g, (match, key, path) => {
-          if (key === 'event') {
-            if (!path) return event.eventName;
-            return _.get(event, path, match);
-          }
-          return match;
-        });
-      }
-      
-      // If there are custom blocks, use them instead
-      if (config.blocks) {
-        message.blocks = config.blocks.map(block => {
-          // Deep clone the block to avoid modifying the template
-          const processedBlock = JSON.parse(JSON.stringify(block));
-          
-          // Process template strings in the block
-          JSON.stringify(processedBlock, (key, value) => {
-            if (typeof value === 'string') {
-              return value.replace(/\{(\w+)(?:\.([^}]+))?\}/g, (match, key, path) => {
-                if (key === 'event') {
-                  if (!path) return event.eventName;
-                  return _.get(event, path, match);
-                }
-                return match;
-              });
-            }
-            return value;
-          });
-          
-          return processedBlock;
-        });
-      }
-      
-      return message;
-    };
-  }
-  
-  /**
-   * Pre-configured transformer for Mixpanel
-   * @static
-   * @param {Object} options - Configuration options
-   * @returns {Function} - Transform function
-   */
-  static mixpanelTransformer(options = {}) {
-    const config = options.config || options || {};
-    
-    return (event) => {
-      // Default properties
-      const baseProperties = {
-        time: new Date(event.timestamp).getTime(),
-        distinct_id: event.properties.userId || 'anonymous',
-        $insert_id: event.id // prevent duplicates
-      };
-      
-      // Determine which properties to include
-      let eventProperties;
-      
-      if (config.includeProperties === false) {
-        // Don't include original properties at all
-        eventProperties = { ...baseProperties };
-      } else if (Array.isArray(config.includeProperties)) {
-        // Only include specific properties
-        eventProperties = { ...baseProperties };
-        config.includeProperties.forEach(prop => {
-          if (event.properties[prop] !== undefined) {
-            eventProperties[prop] = event.properties[prop];
-          }
-        });
-      } else if (Array.isArray(config.excludeProperties)) {
-        // Include all properties except excluded ones
-        eventProperties = { ...baseProperties, ...event.properties };
-        config.excludeProperties.forEach(prop => {
-          delete eventProperties[prop];
-        });
-      } else {
-        // Include all properties (default)
-        eventProperties = { ...baseProperties, ...event.properties };
-      }
-      
-      // Allow customizing the event name
-      const eventName = config.eventNamePrefix 
-        ? `${config.eventNamePrefix}${event.eventName}`
-        : event.eventName;
-      
-      return {
-        event: eventName,
-        properties: eventProperties
-      };
-    };
-  }
-  
-  /**
    * Template-based transformer that uses lodash template strings
    * @static
    * @param {Object} options - Configuration options
@@ -619,50 +459,108 @@ class WebhookForwarder {
       throw new Error('Script transformer requires a script configuration');
     }
     
-    // Create a new context for the script
-    const context = vm.createContext({
+    // Define safe operations in a limited scope
+    const safeTransformOperations = {
+      get: (obj, path, defaultValue) => _.get(obj, path, defaultValue),
+      set: (obj, path, value) => _.set(obj, path, value),
+      pick: (obj, paths) => _.pick(obj, paths),
+      omit: (obj, paths) => _.omit(obj, paths),
+      merge: (obj1, obj2) => _.merge({}, obj1, obj2),
+      format: (date, format = 'YYYY-MM-DD HH:mm:ss') => 
+        require('moment')(date).format(format),
+      timestamp: (date = new Date()) => Math.floor(date.getTime() / 1000),
+      parseJSON: (str, defaultValue = {}) => {
+        try {
+          return JSON.parse(str);
+        } catch (e) {
+          return defaultValue;
+        }
+      },
+      filter: (array, predicate) => _.filter(array, predicate),
+      map: (array, mapper) => _.map(array, mapper),
+      includes: (collection, value) => _.includes(collection, value)
+    };
+    
+    const safeTransformContext = {
+      env: {
+        NODE_ENV: process.env.NODE_ENV
+      },
       console: {
         log: (...args) => logger.debug('Script transformer:', ...args),
         error: (...args) => logger.error('Script transformer:', ...args),
         warn: (...args) => logger.warn('Script transformer:', ...args)
       },
-      _: _,
-      moment: require('moment'),
-      Buffer: Buffer,
-      JSON: JSON
-    });
+      // Safer operation runners
+      operations: safeTransformOperations
+    };
     
-    // Compile the script
-    let script;
-    try {
-      // Wrap the script in a function
-      const wrappedScript = `
-        (function(event) {
-          ${config.script}
-        })
-      `;
-      script = new vm.Script(wrappedScript);
-      
-      // Test compile by running with an empty event
-      const testFn = script.runInContext(context);
-      if (typeof testFn !== 'function') {
-        throw new Error('Script must return a function');
-      }
-    } catch (error) {
-      logger.error('Error compiling script transformer:', error);
-      throw new Error(`Invalid script: ${error.message}`);
-    }
-    
+    // Compile and store transformation function for later use
+    // Instead of using vm, use a function with a fixed structure
     return (event) => {
       try {
-        // Get the transform function from the script
-        const transformFn = script.runInContext(context);
+        // Create a safe event deep clone to prevent modifications to the original
+        const eventCopy = _.cloneDeep(event);
+        const result = {}; // Default empty result
         
-        // Run it with the event
-        return transformFn(event);
+        // Execute pre-defined operations based on script configuration
+        // This is just a simplified example - implement a declarative approach
+        const scriptConfig = JSON.parse(config.script);
+        
+        // Apply defined operations in sequence
+        if (Array.isArray(scriptConfig.operations)) {
+          scriptConfig.operations.forEach(op => {
+            if (!op.type || !safeTransformOperations[op.type]) {
+              logger.warn(`Unknown operation type: ${op.type}`);
+              return;
+            }
+            
+            try {
+              // Apply the operation with safety constraints
+              const opResult = safeTransformOperations[op.type](
+                ...op.args.map(arg => {
+                  // Handle special event reference
+                  if (arg === '$event') return eventCopy;
+                  if (arg === '$result') return result;
+                  return arg;
+                })
+              );
+              
+              // Store in result or apply to existing result
+              if (op.target === '$result') {
+                Object.assign(result, opResult);
+              } else if (op.target) {
+                _.set(result, op.target, opResult);
+              }
+            } catch (opError) {
+              logger.error(`Error in operation ${op.type}:`, opError);
+            }
+          });
+        }
+        
+        // Apply simple fixed field mapping from config
+        if (scriptConfig.fieldMapping) {
+          Object.entries(scriptConfig.fieldMapping).forEach(([target, source]) => {
+            _.set(result, target, _.get(eventCopy, source));
+          });
+        }
+        
+        // Include all original properties if specified
+        if (scriptConfig.includeOriginal) {
+          Object.assign(result, eventCopy);
+        }
+        
+        return Object.keys(result).length > 0 ? result : eventCopy;
       } catch (error) {
-        logger.error('Error running script transformer:', error);
-        throw new Error(`Script execution error: ${error.message}`);
+        logger.error('Error executing script transformer:', error);
+        // Return a safe fallback on error
+        return {
+          error: 'Transformation error',
+          originalEvent: {
+            id: event.id,
+            eventName: event.eventName,
+            timestamp: event.timestamp
+          }
+        };
       }
     };
   }

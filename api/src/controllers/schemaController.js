@@ -300,7 +300,7 @@ const getTableSchema = asyncHandler(async (req, res) => {
   }
   
   try {
-    // Check if table exists
+    // Check if table exists - using parameterized query
     const tableExists = await sequelize.query(`
       SELECT EXISTS (
         SELECT FROM information_schema.tables 
@@ -316,7 +316,7 @@ const getTableSchema = asyncHandler(async (req, res) => {
       throw new Error(`Table '${tableName}' not found`);
     }
     
-    // Get column information
+    // Get column information - using parameterized query
     const columns = await sequelize.query(`
       SELECT 
         column_name, 
@@ -335,7 +335,7 @@ const getTableSchema = asyncHandler(async (req, res) => {
       type: sequelize.QueryTypes.SELECT
     });
     
-    // Get constraint information
+    // Get constraint information - using parameterized query
     const constraints = await sequelize.query(`
       SELECT 
         tc.constraint_name,
@@ -360,7 +360,7 @@ const getTableSchema = asyncHandler(async (req, res) => {
       type: sequelize.QueryTypes.SELECT
     });
     
-    // Get index information
+    // Get index information - using parameterized query
     const indexes = await sequelize.query(`
       SELECT
         indexname as index_name,

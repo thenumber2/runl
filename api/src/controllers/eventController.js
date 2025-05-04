@@ -104,10 +104,12 @@ const getEvents = asyncHandler(async (req, res) => {
     whereClause.eventName = eventName;
   }
   
-  // Add userId filter if provided
+  // Add userId filter if provided - using parameterized query
   if (userId) {
-    whereClause[sequelize.Op.and] = sequelize.literal(
-      `properties->>'userId' = '${userId}'`
+    whereClause[sequelize.Op.and] = sequelize.where(
+      sequelize.json('properties.userId'),
+      '=',
+      userId
     );
   }
   
@@ -156,9 +158,13 @@ const getEventsByUserId = asyncHandler(async (req, res) => {
   const offset = (page - 1) * limit;
   const userId = req.params.userId;
   
-  // Use raw query to filter by userId in JSONB
+  // Using parameterized query instead of literal SQL
   const { count, rows } = await Event.findAndCountAll({
-    where: sequelize.literal(`properties->>'userId' = '${userId}'`),
+    where: sequelize.where(
+      sequelize.json('properties.userId'),
+      '=',
+      userId
+    ),
     limit,
     offset,
     order: [['timestamp', 'DESC']]
@@ -188,9 +194,13 @@ const searchEvents = asyncHandler(async (req, res) => {
     throw new Error('Search key and value are required');
   }
   
-  // Use JSONB querying
+  // Using parameterized JSONB query instead of literal SQL
   const { count, rows } = await Event.findAndCountAll({
-    where: sequelize.literal(`properties->>'${key}' = '${value}'`),
+    where: sequelize.where(
+      sequelize.json(`properties.${key}`),
+      '=',
+      value
+    ),
     limit,
     offset,
     order: [['timestamp', 'DESC']]

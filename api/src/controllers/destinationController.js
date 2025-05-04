@@ -336,7 +336,7 @@ const testDestination = asyncHandler(async (req, res) => {
  * @route GET /api/destinations/stats
  */
 const getDestinationStats = asyncHandler(async (req, res) => {
-  // Get counts by type
+  // Get counts by type - using proper Sequelize aggregation
   const typeCounts = await Destination.findAll({
     attributes: [
       'type',
@@ -345,7 +345,7 @@ const getDestinationStats = asyncHandler(async (req, res) => {
     group: ['type']
   });
   
-  // Get enabled/disabled counts
+  // Get enabled/disabled counts - using proper Sequelize aggregation
   const statusCounts = await Destination.findAll({
     attributes: [
       'enabled',
@@ -396,66 +396,29 @@ const getDestinationStats = asyncHandler(async (req, res) => {
  * @returns {Object} - The registered destination config
  */
 async function registerWithForwarder(destination, forceEnable = false) {
-    // Skip registration if disabled and not forced
-    if (!destination.enabled && !forceEnable) {
-      return null;
-    }
-    
-    // Create the transform configuration
-    let transform;
-    
-    // If a custom transform is specified, use it
-    if (destination.transform) {
-      transform = destination.transform;
-    } else {
-      // Otherwise, set up a default transform based on destination type
-      switch (destination.type.toLowerCase()) {
-        case 'slack':
-          transform = {
-            type: 'slack',
-            config: destination.config
-          };
-          break;
-          
-        case 'mixpanel':
-          transform = {
-            type: 'mixpanel',
-            config: destination.config
-          };
-          break;
-          
-        default:
-          // For custom destinations, use a simple mapping transformer
-          transform = {
-            type: 'mapping',
-            config: {
-              mapping: {
-                // Map standard event fields with reasonable defaults
-                event: 'eventName',
-                id: 'id',
-                timestamp: 'timestamp',
-                // Include original properties
-                properties: 'properties'
-              },
-              // Include all original top-level fields
-              includeOriginal: true
-            }
-          };
-      }
-    }
-    
-    // Register with webhook forwarder
-    return webhookForwarder.registerDestination(destination.name, {
-      url: destination.url,
-      method: destination.method || 'POST',
-      eventTypes: destination.eventTypes,
-      transform,
-      headers: destination.config.headers || {},
-      secret: destination.secretKey,
-      enabled: destination.enabled || forceEnable,
-      timeout: destination.timeout || 5000
-    });
+  // Skip registration if disabled and not forced
+  if (!destination.enabled && !forceEnable) {
+    return null;
   }
+  
+  // Get the decrypted secret if it exists
+  const secret = destination.getDecryptedSecret();
+  
+  // Create the transform configuration
+  let transform;
+  
+  // Register with webhook forwarder
+  return webhookForwarder.registerDestination(destination.name, {
+    url: destination.url,
+    method: destination.method || 'POST',
+    eventTypes: destination.eventTypes,
+    transform,
+    headers: destination.config.headers || {},
+    secret: secret, // Use the decrypted secret
+    enabled: destination.enabled || forceEnable,
+    timeout: destination.timeout || 5000
+  });
+}
 
 /**
  * Remove sensitive data from destination object

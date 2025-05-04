@@ -365,35 +365,62 @@ class EventRouter {
     }
 
     try {
-      // Create sandbox context for the script
-      const context = vm.createContext({
-        event,
-        result: false,
-        console: {
-          log: (...args) => logger.debug('Script condition log:', ...args),
-          error: (...args) => logger.error('Script condition error:', ...args)
-        }
-      });
-
-      // Run the script with a timeout to prevent infinite loops
-      const script = new vm.Script(`
-        try {
-          result = (function() {
-            ${condition.script}
-          })();
-        } catch (e) {
-          console.error(e);
-          result = false;
-        }
-      `);
-
-      script.runInContext(context, { timeout: 1000 });
-
-      return Boolean(context.result);
+      // Parse the condition script as a declarative configuration
+      const scriptConfig = JSON.parse(condition.script);
+      
+      // Simple condition evaluator based on operations
+      switch (scriptConfig.type) {
+        case 'equals':
+          return _.get(event, scriptConfig.field) === scriptConfig.value;
+          
+        case 'contains':
+          const fieldValue = _.get(event, scriptConfig.field);
+          if (typeof fieldValue === 'string') {
+            return fieldValue.includes(scriptConfig.value);
+          } else if (Array.isArray(fieldValue)) {
+            return fieldValue.includes(scriptConfig.value);
+          }
+          return false;
+          
+        case 'gt':
+          return _.get(event, scriptConfig.field) > scriptConfig.value;
+          
+        case 'lt':
+          return _.get(event, scriptConfig.field) < scriptConfig.value;
+          
+        case 'regex':
+          const value = _.get(event, scriptConfig.field);
+          if (typeof value !== 'string') return false;
+          
+          // Only allow safe regex patterns
+          const safePattern = scriptConfig.pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const regex = new RegExp(safePattern, scriptConfig.flags || '');
+          return regex.test(value);
+          
+        case 'and':
+          return scriptConfig.conditions.every(subCond => 
+            this._evaluateScriptCondition(event, { script: JSON.stringify(subCond) })
+          );
+          
+        case 'or':
+          return scriptConfig.conditions.some(subCond => 
+            this._evaluateScriptCondition(event, { script: JSON.stringify(subCond) })
+          );
+          
+        case 'not':
+          return !this._evaluateScriptCondition(
+            event, 
+            { script: JSON.stringify(scriptConfig.condition) }
+          );
+          
+        default:
+          logger.warn(`Unknown condition type: ${scriptConfig.type}`);
+          return false;
+      }
     } catch (error) {
       logger.error(`Error evaluating script condition:`, {
         error: error.message,
-        script: condition.script
+        condition: condition.script
       });
       return false;
     }

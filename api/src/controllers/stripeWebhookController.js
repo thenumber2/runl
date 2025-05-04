@@ -334,22 +334,19 @@ const reprocessFailedEvents = asyncHandler(async (req, res) => {
  * @route GET /api/integrations/stripe/stats
  */
 const getStripeEventStats = asyncHandler(async (req, res) => {
-  // Get basic stats about Stripe events
-  const stats = await sequelize.query(`
-    SELECT 
-      stripe_event_type,
-      COUNT(*) as total,
-      SUM(CASE WHEN processed = true THEN 1 ELSE 0 END) as processed_count,
-      SUM(CASE WHEN processed = false THEN 1 ELSE 0 END) as unprocessed_count,
-      MIN(stripe_event_created) as oldest_event,
-      MAX(stripe_event_created) as newest_event
-    FROM 
-      stripe_events
-    GROUP BY 
-      stripe_event_type
-    ORDER BY 
-      total DESC
-  `, { type: sequelize.QueryTypes.SELECT });
+  // Get basic stats about Stripe events using Sequelize's proper aggregation
+  const stats = await StripeEvent.findAll({
+    attributes: [
+      'stripeEventType',
+      [sequelize.fn('COUNT', sequelize.col('*')), 'total'],
+      [sequelize.fn('SUM', sequelize.literal('CASE WHEN processed = true THEN 1 ELSE 0 END')), 'processed_count'],
+      [sequelize.fn('SUM', sequelize.literal('CASE WHEN processed = false THEN 1 ELSE 0 END')), 'unprocessed_count'],
+      [sequelize.fn('MIN', sequelize.col('stripeEventCreated')), 'oldest_event'],
+      [sequelize.fn('MAX', sequelize.col('stripeEventCreated')), 'newest_event']
+    ],
+    group: ['stripeEventType'],
+    order: [[sequelize.literal('total'), 'DESC']]
+  });
   
   // Get counts of unprocessed events
   const unprocessedCount = await StripeEvent.count({

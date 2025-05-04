@@ -1,5 +1,7 @@
 const { DataTypes } = require('sequelize');
 const { sequelize } = require('../db/connection');
+const cryptoUtil = require('../utils/crypto');
+const logger = require('../utils/logger');
 
 /**
  * Destination model for storing webhook forwarding targets
@@ -104,7 +106,38 @@ const Destination = sequelize.define('Destination', {
       name: 'destinations_enabled_idx',
       fields: ['enabled']
     }
-  ]
+  ],
+  hooks: {
+    // Encrypt secret before saving
+    beforeSave: async (destination) => {
+      try {
+        // Only encrypt if the secret has changed and is not already encrypted
+        if (destination.changed('secretKey') && 
+            destination.secretKey && 
+            !cryptoUtil.isEncrypted(destination.secretKey)) {
+          destination.secretKey = cryptoUtil.encrypt(destination.secretKey);
+        }
+      } catch (error) {
+        logger.error('Error encrypting secret key:', error);
+      }
+    }
+  }
 });
+
+// Add instance method to get decrypted secret
+Destination.prototype.getDecryptedSecret = function() {
+  if (!this.secretKey) return null;
+  
+  try {
+    // Only decrypt if it looks encrypted
+    if (cryptoUtil.isEncrypted(this.secretKey)) {
+      return cryptoUtil.decrypt(this.secretKey);
+    }
+    return this.secretKey; // Return as-is for backward compatibility
+  } catch (error) {
+    logger.error('Error decrypting secret key:', error);
+    return null;
+  }
+};
 
 module.exports = Destination;
