@@ -1,7 +1,7 @@
 const { DataTypes } = require('sequelize');
 const { sequelize } = require('../db/connection');
-const Transformation = require('./Transformation');
-const Destination = require('./Destination');
+const Transformation = require('../models/Transformation');
+const Destination = require('../models/Destination');
 
 /**
  * Route model that connects event types to transformations and destinations
