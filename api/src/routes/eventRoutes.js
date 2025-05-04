@@ -43,6 +43,11 @@ const setupEventRoutes = (apiRouter) => {
     eventController.getEventById
   );
   
+  // Forward an event through webhook forwarder
+  eventRouter.post('/:id/forward',
+    eventController.forwardEvent
+  );
+  
   // Mount the event routes
   apiRouter.use('/events', eventRouter);
 };

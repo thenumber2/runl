@@ -10,6 +10,7 @@ const logger = require('./utils/logger');
 const { sanitizeMiddleware } = require('./middleware/sanitization');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { defaultRateLimiter } = require('./middleware/rateLimit');
+const eventRouter = require('./services/eventRouter');
 
 // Initialize Express app
 const app = express();
@@ -80,6 +81,15 @@ async function startServer() {
     
     // Connect to Redis
     await setupRedis();
+    
+    // Initialize event router (loads active routes)
+    try {
+      await eventRouter.initialize();
+      logger.info('Event Router initialized successfully');
+    } catch (error) {
+      logger.error('Failed to initialize Event Router:', error);
+      // Continue starting the server even if Event Router fails
+    }
     
     // Start listening
     app.listen(PORT, () => {
