@@ -6,6 +6,7 @@ const logger = require('../utils/logger');
  * 
  * A centralized service for managing Redis connections and operations
  * with improved error handling, connection management, and simplified APIs.
+ * Fixed to prevent memory leaks from event listeners.
  */
 class RedisService {
   constructor() {
@@ -15,6 +16,13 @@ class RedisService {
     this.options = {};
     this.connectionAttempts = 0;
     this.maxReconnectAttempts = 10;
+    
+    // Bind event handlers once in the constructor to maintain reference consistency
+    this._boundHandleError = this._handleError.bind(this);
+    this._boundHandleConnect = this._handleConnect.bind(this);
+    this._boundHandleReconnecting = this._handleReconnecting.bind(this);
+    this._boundHandleReady = this._handleReady.bind(this);
+    this._boundHandleEnd = this._handleEnd.bind(this);
   }
 
   /**
@@ -61,6 +69,9 @@ class RedisService {
       
       logger.info(`Connecting to Redis at ${host}:${port}`);
       
+      // Clean up existing client if it exists
+      await this._cleanupExistingClient();
+      
       this.client = createClient({
         url,
         socket: {
@@ -84,12 +95,8 @@ class RedisService {
         }
       });
 
-      // Set up event handlers
-      this.client.on('error', this._handleError.bind(this));
-      this.client.on('connect', this._handleConnect.bind(this));
-      this.client.on('reconnecting', this._handleReconnecting.bind(this));
-      this.client.on('ready', this._handleReady.bind(this));
-      this.client.on('end', this._handleEnd.bind(this));
+      // Set up event handlers using bound methods from constructor
+      this._attachEventListeners();
 
       await this.client.connect();
       this.isConnected = true;
@@ -107,18 +114,61 @@ class RedisService {
         port: this.options.port
       });
       
-      if (this.client) {
-        try {
-          await this.client.quit();
-        } catch (quitError) {
-          logger.debug('Error while quitting Redis client:', quitError);
-        }
-        this.client = null;
-      }
+      await this._cleanupExistingClient();
       
       // Allow application to continue without Redis
       logger.warn('Application running without Redis caching');
       return this;
+    }
+  }
+  
+  /**
+   * Attach event listeners to the Redis client
+   * @private
+   */
+  _attachEventListeners() {
+    if (!this.client) return;
+    
+    this.client.on('error', this._boundHandleError);
+    this.client.on('connect', this._boundHandleConnect);
+    this.client.on('reconnecting', this._boundHandleReconnecting);
+    this.client.on('ready', this._boundHandleReady);
+    this.client.on('end', this._boundHandleEnd);
+  }
+  
+  /**
+   * Remove event listeners from the Redis client
+   * @private
+   */
+  _removeEventListeners() {
+    if (!this.client) return;
+    
+    this.client.removeListener('error', this._boundHandleError);
+    this.client.removeListener('connect', this._boundHandleConnect);
+    this.client.removeListener('reconnecting', this._boundHandleReconnecting);
+    this.client.removeListener('ready', this._boundHandleReady);
+    this.client.removeListener('end', this._boundHandleEnd);
+  }
+  
+  /**
+   * Clean up existing Redis client
+   * @private
+   * @returns {Promise<void>}
+   */
+  async _cleanupExistingClient() {
+    if (this.client) {
+      try {
+        // Remove all event listeners to prevent memory leaks
+        this._removeEventListeners();
+        
+        // Quit if the connection is still open
+        if (this.client.isOpen) {
+          await this.client.quit();
+        }
+      } catch (quitError) {
+        logger.debug('Error while cleaning up Redis client:', quitError);
+      }
+      this.client = null;
     }
   }
 
@@ -144,13 +194,9 @@ class RedisService {
    */
   async disconnect() {
     try {
-      if (this.client && this.client.isOpen) {
-        await this.client.quit();
-        logger.info('Redis disconnected successfully');
-      }
-      
+      await this._cleanupExistingClient();
       this.isConnected = false;
-      this.client = null;
+      logger.info('Redis disconnected successfully');
     } catch (error) {
       logger.error('Error disconnecting from Redis:', {
         error: error.message,

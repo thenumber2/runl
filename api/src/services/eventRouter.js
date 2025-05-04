@@ -7,6 +7,56 @@ const _ = require('lodash');
 const transformerService = require('./transformerService');
 
 /**
+ * Simple mutex implementation for synchronizing async operations
+ */
+class Mutex {
+  constructor() {
+    this.locked = false;
+    this.waitingResolvers = [];
+  }
+
+  /**
+   * Acquire the lock
+   * @returns {Promise<function>} - Release function that must be called to release the lock
+   */
+  async acquire() {
+    // If the mutex is currently locked, wait for it to be released
+    if (this.locked) {
+      // Create a promise that will be resolved when the lock is released
+      const promise = new Promise(resolve => {
+        this.waitingResolvers.push(resolve);
+      });
+      
+      // Wait for our turn
+      await promise;
+    }
+    
+    // Mark as locked
+    this.locked = true;
+    
+    // Return a function to release the lock
+    return () => this.release();
+  }
+
+  /**
+   * Release the lock and notify the next waiting resolver
+   */
+  release() {
+    if (!this.locked) {
+      return;
+    }
+    
+    this.locked = false;
+    
+    // If there are waiters, resolve the next one
+    const nextResolver = this.waitingResolvers.shift();
+    if (nextResolver) {
+      nextResolver();
+    }
+  }
+}
+
+/**
  * Event Router Service
  * Routes incoming events to the proper destinations based on configured routes
  */
@@ -14,6 +64,8 @@ class EventRouter {
   constructor() {
     this.routes = [];
     this.initialized = false;
+    this.mutex = new Mutex(); // Add mutex for synchronization
+    this.initializing = false; // Track initialization status
   }
 
   /**
@@ -22,10 +74,30 @@ class EventRouter {
    * @throws {Error} If routes cannot be loaded
    */
   async initialize() {
+    // Prevent multiple simultaneous initialization attempts
+    if (this.initializing) {
+      logger.debug('EventRouter initialization already in progress, waiting...');
+      // Wait for the ongoing initialization to complete
+      while (this.initializing) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      return;
+    }
+
     try {
-      await this.refreshRoutes();
-      this.initialized = true;
-      logger.info('Event Router initialized successfully');
+      this.initializing = true;
+      
+      // Acquire mutex lock to prevent concurrent refreshes
+      const release = await this.mutex.acquire();
+      
+      try {
+        await this.refreshRoutes();
+        this.initialized = true;
+        logger.info('Event Router initialized successfully');
+      } finally {
+        // Always release the mutex
+        release();
+      }
     } catch (error) {
       logger.error('Failed to initialize EventRouter:', {
         error: error.message,
@@ -33,6 +105,8 @@ class EventRouter {
       });
       this.initialized = false;
       throw error;
+    } finally {
+      this.initializing = false;
     }
   }
 
@@ -42,6 +116,9 @@ class EventRouter {
    * @throws {Error} If routes cannot be loaded
    */
   async refreshRoutes() {
+    // Acquire mutex lock to ensure exclusive access
+    const release = await this.mutex.acquire();
+    
     try {
       // Get all enabled routes with their transformations and destinations
       const routes = await Route.findAll({
@@ -69,6 +146,9 @@ class EventRouter {
         stack: error.stack
       });
       throw error;
+    } finally {
+      // Always release the mutex
+      release();
     }
   }
 
@@ -106,8 +186,11 @@ class EventRouter {
       const results = [];
       const webhookForwarder = require('./webhookForwarder');
 
+      // Create a local copy of routes to prevent issues if routes are refreshed during processing
+      const routesToProcess = [...this.routes];
+
       // Process each route that matches this event
-      for (const route of this.routes) {
+      for (const route of routesToProcess) {
         try {
           // Skip disabled routes (though they should already be filtered out)
           if (!route.enabled) continue;

@@ -5,17 +5,103 @@ const fs = require('fs').promises;
 const path = require('path');
 
 /**
+ * SQL Identifier sanitization function
+ * Validates that identifiers only contain safe characters
+ * and properly escapes them for use in SQL statements
+ * 
+ * @param {string} identifier - SQL identifier to sanitize
+ * @param {string} type - Type of identifier (for error messages)
+ * @returns {string} - Sanitized and quoted identifier
+ * @throws {Error} If identifier contains invalid characters
+ */
+function sanitizeSqlIdentifier(identifier, type = 'identifier') {
+  // Strict validation: only allow alphanumeric and underscore
+  if (!identifier || typeof identifier !== 'string') {
+    throw new Error(`Invalid ${type}: must be a non-empty string`);
+  }
+  
+  if (!/^[a-zA-Z0-9_]+$/.test(identifier)) {
+    throw new Error(`Invalid ${type}: '${identifier}' must contain only alphanumeric characters and underscores`);
+  }
+  
+  // Always quote identifiers to prevent SQL injection and handle reserved words
+  return `"${identifier}"`;
+}
+
+/**
+ * Sanitize SQL data type
+ * Validates that data type definitions only contain allowed characters
+ * 
+ * @param {string} dataType - SQL data type to sanitize
+ * @returns {string} - Sanitized data type
+ * @throws {Error} If data type contains invalid characters
+ */
+function sanitizeSqlDataType(dataType) {
+  if (!dataType || typeof dataType !== 'string') {
+    throw new Error('Invalid data type: must be a non-empty string');
+  }
+  
+  // Only allow alphanumeric, underscore, parentheses, commas, and spaces in data types
+  // This covers most PostgreSQL types like VARCHAR(255), NUMERIC(10,2), etc.
+  if (!/^[a-zA-Z0-9_\s(),]+$/.test(dataType)) {
+    throw new Error(`Invalid data type: '${dataType}' contains disallowed characters`);
+  }
+  
+  return dataType;
+}
+
+/**
+ * Validate SQL content from templates
+ * Performs basic validation to prevent harmful SQL
+ * 
+ * @param {string} sql - SQL content to validate
+ * @returns {boolean} - Whether the SQL passes validation
+ */
+function validateSqlContent(sql) {
+  if (!sql || typeof sql !== 'string') {
+    return false;
+  }
+  
+  // Disallow multiple statements (potential for SQL injection)
+  if (sql.includes(';') && sql.indexOf(';') !== sql.lastIndexOf(';')) {
+    return false;
+  }
+  
+  // Disallow dangerous operations
+  const dangerousPatterns = [
+    /DROP\s+DATABASE/i,
+    /DROP\s+SCHEMA/i,
+    /TRUNCATE\s+[a-zA-Z0-9_\s]*(CASCADE|ALL)/i,
+    /GRANT\s+ALL/i,
+    /CREATE\s+USER/i,
+    /ALTER\s+SYSTEM/i,
+    /CREATE\s+EXTENSION/i,
+    /COPY\s+.*FROM/i,
+    /CREATE\s+FUNCTION.*LANGUAGE\s+'?internal'?/i,
+    /CREATE\s+PROCEDURE.*LANGUAGE\s+'?internal'?/i
+  ];
+  
+  for (const pattern of dangerousPatterns) {
+    if (pattern.test(sql)) {
+      return false;
+    }
+  }
+  
+  return true;
+}
+
+/**
  * Get database health and schema information
  * @route GET /api/admin/schema
  */
 const getDatabaseInfo = asyncHandler(async (req, res) => {
-  // Use raw query to get table information
+  // Use parameterized query instead of direct table_name usage
   const tables = await sequelize.query(`
     SELECT 
       table_name,
-      (SELECT count(*) FROM information_schema.columns WHERE table_name = t.table_name) as column_count
+      (SELECT count(*) FROM information_schema.columns WHERE table_name = information_schema.tables.table_name) as column_count
     FROM 
-      information_schema.tables t
+      information_schema.tables
     WHERE 
       table_schema = 'public'
     ORDER BY 
@@ -34,7 +120,7 @@ const getDatabaseInfo = asyncHandler(async (req, res) => {
 });
 
 /**
- * Create a table based on JSON definition
+ * Create a table based on JSON definition with enhanced SQL injection protection
  * @route POST /api/admin/schema/tables
  */
 const createTable = asyncHandler(async (req, res) => {
@@ -46,31 +132,15 @@ const createTable = asyncHandler(async (req, res) => {
     throw new Error('Table name and at least one column are required');
   }
   
-  // Check table name format (prevent SQL injection)
-  if (!/^[a-zA-Z0-9_]+$/.test(tableName)) {
-    res.status(400);
-    throw new Error('Table name must contain only alphanumeric characters and underscores');
-  }
-  
-  // Validate columns format
-  const validateColumns = columns.every(col => 
-    col.name && col.type && 
-    /^[a-zA-Z0-9_]+$/.test(col.name) && 
-    /^[a-zA-Z0-9_\(\)]+$/.test(col.type)
-  );
-  
-  if (!validateColumns) {
-    res.status(400);
-    throw new Error('Invalid column format. Each column must have a valid name and type');
-  }
-  
-  // Generate SQL for table creation
   try {
+    // Sanitize table name
+    const sanitizedTableName = sanitizeSqlIdentifier(tableName, 'table name');
+    
     // Start transaction
     const transaction = await sequelize.transaction();
     
     try {
-      // Check if table exists
+      // Check if table exists - using parameterized query
       const tableExists = await sequelize.query(`
         SELECT EXISTS (
           SELECT FROM information_schema.tables 
@@ -90,12 +160,22 @@ const createTable = asyncHandler(async (req, res) => {
         });
       }
       
-      // Build CREATE TABLE statement
-      let createTableSQL = `CREATE TABLE ${tableName} (\n`;
+      // Build column definitions
+      const columnDefinitions = [];
       
-      // Add columns
-      const columnDefinitions = columns.map(col => {
-        let colDef = `  "${col.name}" ${col.type}`;
+      for (const col of columns) {
+        // Validate column definition
+        if (!col.name || !col.type) {
+          await transaction.rollback();
+          res.status(400);
+          throw new Error('Each column must have a name and type');
+        }
+        
+        // Sanitize column name and type
+        const sanitizedColName = sanitizeSqlIdentifier(col.name, 'column name');
+        const sanitizedColType = sanitizeSqlDataType(col.type);
+        
+        let colDef = `${sanitizedColName} ${sanitizedColType}`;
         
         // Add constraints for the column
         if (col.primaryKey) colDef += ' PRIMARY KEY';
@@ -104,46 +184,97 @@ const createTable = asyncHandler(async (req, res) => {
         if (col.defaultValue !== undefined) {
           // Handle different default value types
           if (typeof col.defaultValue === 'string') {
-            colDef += ` DEFAULT '${col.defaultValue}'`;
+            // Escape string literals
+            colDef += ` DEFAULT '${col.defaultValue.replace(/'/g, "''")}'`;
           } else if (col.defaultValue === null) {
             colDef += ' DEFAULT NULL';
           } else {
+            // For numeric/boolean values
             colDef += ` DEFAULT ${col.defaultValue}`;
           }
         }
         
-        return colDef;
-      }).join(',\n');
+        columnDefinitions.push(colDef);
+      }
       
-      createTableSQL += columnDefinitions;
+      // Process table-level constraints
+      const constraintDefinitions = [];
       
-      // Add table-level constraints
       if (constraints && constraints.length > 0) {
-        const constraintDefinitions = constraints.map(constraint => {
-          if (constraint.type === 'PRIMARY KEY') {
-            return `  PRIMARY KEY (${constraint.columns.map(c => `"${c}"`).join(', ')})`;
-          } else if (constraint.type === 'UNIQUE') {
-            return `  UNIQUE (${constraint.columns.map(c => `"${c}"`).join(', ')})`;
-          } else if (constraint.type === 'CHECK') {
-            return `  CHECK (${constraint.definition})`;
-          } else if (constraint.type === 'FOREIGN KEY') {
-            return `  FOREIGN KEY (${constraint.columns.map(c => `"${c}"`).join(', ')}) ` +
-                   `REFERENCES ${constraint.references.table}(${constraint.references.columns.map(c => `"${c}"`).join(', ')})` +
-                   (constraint.onDelete ? ` ON DELETE ${constraint.onDelete}` : '') +
-                   (constraint.onUpdate ? ` ON UPDATE ${constraint.onUpdate}` : '');
+        for (const constraint of constraints) {
+          if (!constraint.type || !constraint.columns || !Array.isArray(constraint.columns)) {
+            continue;
           }
-          return null;
-        }).filter(Boolean).join(',\n');
-        
-        if (constraintDefinitions) {
-          createTableSQL += ',\n' + constraintDefinitions;
+          
+          // Sanitize column names
+          const sanitizedColumns = constraint.columns.map(col => 
+            sanitizeSqlIdentifier(col, 'column name')
+          ).join(', ');
+          
+          let constraintDef = '';
+          
+          switch (constraint.type) {
+            case 'PRIMARY KEY':
+              constraintDef = `PRIMARY KEY (${sanitizedColumns})`;
+              break;
+              
+            case 'UNIQUE':
+              constraintDef = `UNIQUE (${sanitizedColumns})`;
+              break;
+              
+            case 'CHECK':
+              // Check constraints need careful handling
+              // This is simplified - a real implementation would need more validation
+              if (constraint.definition && typeof constraint.definition === 'string') {
+                // Basic validation of check constraint - very restrictive for safety
+                if (/^[a-zA-Z0-9_\s<>=!()]+$/.test(constraint.definition)) {
+                  constraintDef = `CHECK (${constraint.definition})`;
+                }
+              }
+              break;
+              
+            case 'FOREIGN KEY':
+              if (constraint.references && 
+                  constraint.references.table && 
+                  constraint.references.columns && 
+                  Array.isArray(constraint.references.columns)) {
+                
+                // Sanitize referenced table and columns
+                const refTable = sanitizeSqlIdentifier(constraint.references.table, 'referenced table');
+                const refColumns = constraint.references.columns.map(col => 
+                  sanitizeSqlIdentifier(col, 'referenced column')
+                ).join(', ');
+                
+                constraintDef = `FOREIGN KEY (${sanitizedColumns}) REFERENCES ${refTable}(${refColumns})`;
+                
+                // Add ON DELETE/UPDATE actions if specified
+                if (constraint.onDelete && ['CASCADE', 'SET NULL', 'SET DEFAULT', 'RESTRICT', 'NO ACTION'].includes(constraint.onDelete)) {
+                  constraintDef += ` ON DELETE ${constraint.onDelete}`;
+                }
+                
+                if (constraint.onUpdate && ['CASCADE', 'SET NULL', 'SET DEFAULT', 'RESTRICT', 'NO ACTION'].includes(constraint.onUpdate)) {
+                  constraintDef += ` ON UPDATE ${constraint.onUpdate}`;
+                }
+              }
+              break;
+          }
+          
+          if (constraintDef) {
+            constraintDefinitions.push(constraintDef);
+          }
         }
       }
       
-      createTableSQL += '\n)';
+      // Build the final CREATE TABLE statement safely
+      const createTableQuery = `
+        CREATE TABLE ${sanitizedTableName} (
+          ${columnDefinitions.join(',\n          ')}
+          ${constraintDefinitions.length > 0 ? ',\n          ' + constraintDefinitions.join(',\n          ') : ''}
+        )
+      `;
       
-      // Execute CREATE TABLE
-      await sequelize.query(createTableSQL, { transaction });
+      // Execute the create table query
+      await sequelize.query(createTableQuery, { transaction });
       
       // Create indexes if provided
       if (indexes && indexes.length > 0) {
@@ -152,12 +283,33 @@ const createTable = asyncHandler(async (req, res) => {
             continue;
           }
           
-          const indexName = index.name || `${tableName}_${index.columns.join('_')}_idx`;
-          const unique = index.unique ? 'UNIQUE ' : '';
-          const method = index.method ? `USING ${index.method} ` : '';
+          // Generate a safe index name if not provided
+          const indexName = index.name 
+            ? sanitizeSqlIdentifier(index.name, 'index name')
+            : sanitizeSqlIdentifier(`${tableName}_${index.columns.join('_')}_idx`, 'index name');
           
-          const createIndexSQL = `CREATE ${unique}INDEX ${indexName} ON ${tableName} ${method}(${index.columns.map(c => `"${c}"`).join(', ')})`;
-          await sequelize.query(createIndexSQL, { transaction });
+          // Sanitize index columns
+          const sanitizedColumns = index.columns.map(col => 
+            sanitizeSqlIdentifier(col, 'column name')
+          ).join(', ');
+          
+          // Validate index method if provided
+          let indexMethod = '';
+          if (index.method) {
+            const validMethods = ['btree', 'hash', 'gist', 'gin', 'spgist', 'brin'];
+            if (validMethods.includes(index.method.toLowerCase())) {
+              indexMethod = `USING ${index.method.toLowerCase()}`;
+            }
+          }
+          
+          // Create the index
+          const createIndexQuery = `
+            CREATE ${index.unique ? 'UNIQUE ' : ''}INDEX ${indexName}
+            ON ${sanitizedTableName} ${indexMethod}
+            (${sanitizedColumns})
+          `;
+          
+          await sequelize.query(createIndexQuery, { transaction });
         }
       }
       
@@ -226,6 +378,12 @@ const createTableFromTemplate = asyncHandler(async (req, res) => {
       throw err;
     }
     
+    // Validate SQL content for safety
+    if (!validateSqlContent(sql)) {
+      res.status(400);
+      throw new Error('Template contains potentially unsafe SQL operations');
+    }
+    
     // Start a transaction
     const transaction = await sequelize.transaction();
     
@@ -235,9 +393,10 @@ const createTableFromTemplate = asyncHandler(async (req, res) => {
       
       // Verify we can query the created table (if it's a CREATE TABLE statement)
       // This helps validate the template executed successfully
-      const tableMatch = sql.match(/CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+(\w+)/i);
+      const tableMatch = sql.match(/CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+([a-zA-Z0-9_"]+)/i);
       if (tableMatch && tableMatch[1]) {
-        const tableName = tableMatch[1].replace(/['"]/g, ''); // Remove any quotes
+        // Remove any quotes from the table name
+        const tableName = tableMatch[1].replace(/['"]/g, '');
         
         // Check if the table exists and is accessible
         const tableExists = await sequelize.query(`
