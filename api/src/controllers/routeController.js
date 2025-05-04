@@ -11,6 +11,7 @@ const { sequelize } = require('../db/connection');
  * @route POST /api/routes
  */
 const createRoute = asyncHandler(async (req, res) => {
+  // Start a transaction
   const transaction = await sequelize.transaction();
   
   try {
@@ -65,6 +66,7 @@ const createRoute = asyncHandler(async (req, res) => {
     // Create the route
     const route = await Route.create(routeData, { transaction });
     
+    // Commit the transaction
     await transaction.commit();
     
     logger.info(`Created new route: ${route.name}`, {
@@ -74,15 +76,44 @@ const createRoute = asyncHandler(async (req, res) => {
     });
     
     // Refresh the router cache
-    await eventRouter.refreshRoutes();
+    try {
+      await eventRouter.refreshRoutes();
+    } catch (refreshError) {
+      logger.error(`Error refreshing routes after creation:`, {
+        error: refreshError.message,
+        stack: refreshError.stack,
+        routeId: route.id
+      });
+      // Continue despite refresh error - the route was created successfully
+    }
     
     res.status(201).json({
       success: true,
       data: route
     });
   } catch (error) {
-    await transaction.rollback();
-    throw error;
+    // Make sure to rollback the transaction on error
+    if (transaction) {
+      try {
+        await transaction.rollback();
+      } catch (rollbackError) {
+        logger.error(`Error rolling back transaction:`, {
+          error: rollbackError.message,
+          stack: rollbackError.stack,
+          originalError: error.message
+        });
+      }
+    }
+    
+    logger.error(`Error creating route:`, {
+      error: error.message,
+      stack: error.stack,
+      routeName: req.body?.name,
+      transformationId: req.body?.transformationId,
+      destinationId: req.body?.destinationId
+    });
+    
+    throw error; // Let asyncHandler handle the error response
   }
 });
 
@@ -91,39 +122,48 @@ const createRoute = asyncHandler(async (req, res) => {
  * @route GET /api/routes
  */
 const getRoutes = asyncHandler(async (req, res) => {
-  // Apply filters if provided
-  const whereClause = {};
-  
-  if (req.query.enabled !== undefined) {
-    whereClause.enabled = req.query.enabled === 'true';
+  try {
+    // Apply filters if provided
+    const whereClause = {};
+    
+    if (req.query.enabled !== undefined) {
+      whereClause.enabled = req.query.enabled === 'true';
+    }
+    
+    // Get all routes with their transformations and destinations
+    const routes = await Route.findAll({
+      where: whereClause,
+      include: [
+        {
+          model: Transformation,
+          as: 'transformation',
+          attributes: ['id', 'name', 'type', 'enabled']
+        },
+        {
+          model: Destination,
+          as: 'destination',
+          attributes: ['id', 'name', 'type', 'url', 'enabled']
+        }
+      ],
+      order: [
+        ['priority', 'ASC'],
+        ['createdAt', 'DESC']
+      ]
+    });
+    
+    res.json({
+      success: true,
+      count: routes.length,
+      data: routes
+    });
+  } catch (error) {
+    logger.error(`Error getting routes:`, {
+      error: error.message,
+      stack: error.stack,
+      filters: req.query
+    });
+    throw error;
   }
-  
-  // Get all routes with their transformations and destinations
-  const routes = await Route.findAll({
-    where: whereClause,
-    include: [
-      {
-        model: Transformation,
-        as: 'transformation',
-        attributes: ['id', 'name', 'type', 'enabled']
-      },
-      {
-        model: Destination,
-        as: 'destination',
-        attributes: ['id', 'name', 'type', 'url', 'enabled']
-      }
-    ],
-    order: [
-      ['priority', 'ASC'],
-      ['createdAt', 'DESC']
-    ]
-  });
-  
-  res.json({
-    success: true,
-    count: routes.length,
-    data: routes
-  });
 });
 
 /**
@@ -131,28 +171,37 @@ const getRoutes = asyncHandler(async (req, res) => {
  * @route GET /api/routes/:id
  */
 const getRouteById = asyncHandler(async (req, res) => {
-  const route = await Route.findByPk(req.params.id, {
-    include: [
-      {
-        model: Transformation,
-        as: 'transformation'
-      },
-      {
-        model: Destination,
-        as: 'destination'
-      }
-    ]
-  });
-  
-  if (!route) {
-    res.status(404);
-    throw new Error('Route not found');
+  try {
+    const route = await Route.findByPk(req.params.id, {
+      include: [
+        {
+          model: Transformation,
+          as: 'transformation'
+        },
+        {
+          model: Destination,
+          as: 'destination'
+        }
+      ]
+    });
+    
+    if (!route) {
+      res.status(404);
+      throw new Error('Route not found');
+    }
+    
+    res.json({
+      success: true,
+      data: route
+    });
+  } catch (error) {
+    logger.error(`Error getting route by ID:`, {
+      error: error.message,
+      stack: error.stack,
+      routeId: req.params.id
+    });
+    throw error;
   }
-  
-  res.json({
-    success: true,
-    data: route
-  });
 });
 
 /**
@@ -160,6 +209,7 @@ const getRouteById = asyncHandler(async (req, res) => {
  * @route PUT /api/routes/:id
  */
 const updateRoute = asyncHandler(async (req, res) => {
+  // Start a transaction
   const transaction = await sequelize.transaction();
   
   try {
@@ -226,6 +276,7 @@ const updateRoute = asyncHandler(async (req, res) => {
     // Update route
     await route.update(req.body, { transaction });
     
+    // Commit the transaction
     await transaction.commit();
     
     logger.info(`Updated route: ${route.name}`, {
@@ -233,7 +284,16 @@ const updateRoute = asyncHandler(async (req, res) => {
     });
     
     // Refresh the router cache
-    await eventRouter.refreshRoutes();
+    try {
+      await eventRouter.refreshRoutes();
+    } catch (refreshError) {
+      logger.error(`Error refreshing routes after update:`, {
+        error: refreshError.message,
+        stack: refreshError.stack,
+        routeId: route.id
+      });
+      // Continue despite refresh error - the route was updated successfully
+    }
     
     // Fetch the updated route with associations
     const updatedRoute = await Route.findByPk(route.id, {
@@ -256,8 +316,26 @@ const updateRoute = asyncHandler(async (req, res) => {
       data: updatedRoute
     });
   } catch (error) {
-    await transaction.rollback();
-    throw error;
+    // Make sure to rollback the transaction on error
+    if (transaction) {
+      try {
+        await transaction.rollback();
+      } catch (rollbackError) {
+        logger.error(`Error rolling back transaction:`, {
+          error: rollbackError.message,
+          stack: rollbackError.stack,
+          originalError: error.message
+        });
+      }
+    }
+    
+    logger.error(`Error updating route:`, {
+      error: error.message,
+      stack: error.stack,
+      routeId: req.params.id
+    });
+    
+    throw error; // Let asyncHandler handle the error response
   }
 });
 
@@ -266,27 +344,45 @@ const updateRoute = asyncHandler(async (req, res) => {
  * @route DELETE /api/routes/:id
  */
 const deleteRoute = asyncHandler(async (req, res) => {
-  const route = await Route.findByPk(req.params.id);
-  
-  if (!route) {
-    res.status(404);
-    throw new Error('Route not found');
+  try {
+    const route = await Route.findByPk(req.params.id);
+    
+    if (!route) {
+      res.status(404);
+      throw new Error('Route not found');
+    }
+    
+    // Delete the route
+    await route.destroy();
+    
+    logger.info(`Deleted route: ${route.name}`, {
+      routeId: route.id
+    });
+    
+    // Refresh the router cache
+    try {
+      await eventRouter.refreshRoutes();
+    } catch (refreshError) {
+      logger.error(`Error refreshing routes after deletion:`, {
+        error: refreshError.message,
+        stack: refreshError.stack,
+        routeId: req.params.id
+      });
+      // Continue despite refresh error - the route was deleted successfully
+    }
+    
+    res.json({
+      success: true,
+      message: 'Route deleted successfully'
+    });
+  } catch (error) {
+    logger.error(`Error deleting route:`, {
+      error: error.message,
+      stack: error.stack,
+      routeId: req.params.id
+    });
+    throw error;
   }
-  
-  // Delete the route
-  await route.destroy();
-  
-  logger.info(`Deleted route: ${route.name}`, {
-    routeId: route.id
-  });
-  
-  // Refresh the router cache
-  await eventRouter.refreshRoutes();
-  
-  res.json({
-    success: true,
-    message: 'Route deleted successfully'
-  });
 });
 
 /**
@@ -294,31 +390,49 @@ const deleteRoute = asyncHandler(async (req, res) => {
  * @route PATCH /api/routes/:id/toggle
  */
 const toggleRoute = asyncHandler(async (req, res) => {
-  const route = await Route.findByPk(req.params.id);
-  
-  if (!route) {
-    res.status(404);
-    throw new Error('Route not found');
+  try {
+    const route = await Route.findByPk(req.params.id);
+    
+    if (!route) {
+      res.status(404);
+      throw new Error('Route not found');
+    }
+    
+    // Toggle enabled status
+    const newStatus = !route.enabled;
+    
+    await route.update({
+      enabled: newStatus
+    });
+    
+    logger.info(`${newStatus ? 'Enabled' : 'Disabled'} route: ${route.name}`, {
+      routeId: route.id
+    });
+    
+    // Refresh the router cache
+    try {
+      await eventRouter.refreshRoutes();
+    } catch (refreshError) {
+      logger.error(`Error refreshing routes after toggle:`, {
+        error: refreshError.message,
+        stack: refreshError.stack,
+        routeId: route.id
+      });
+      // Continue despite refresh error - the route was toggled successfully
+    }
+    
+    res.json({
+      success: true,
+      data: route
+    });
+  } catch (error) {
+    logger.error(`Error toggling route:`, {
+      error: error.message,
+      stack: error.stack,
+      routeId: req.params.id
+    });
+    throw error;
   }
-  
-  // Toggle enabled status
-  const newStatus = !route.enabled;
-  
-  await route.update({
-    enabled: newStatus
-  });
-  
-  logger.info(`${newStatus ? 'Enabled' : 'Disabled'} route: ${route.name}`, {
-    routeId: route.id
-  });
-  
-  // Refresh the router cache
-  await eventRouter.refreshRoutes();
-  
-  res.json({
-    success: true,
-    data: route
-  });
 });
 
 /**
@@ -326,38 +440,38 @@ const toggleRoute = asyncHandler(async (req, res) => {
  * @route POST /api/routes/:id/test
  */
 const testRoute = asyncHandler(async (req, res) => {
-  const route = await Route.findByPk(req.params.id, {
-    include: [
-      {
-        model: Transformation,
-        as: 'transformation'
-      },
-      {
-        model: Destination,
-        as: 'destination'
-      }
-    ]
-  });
-  
-  if (!route) {
-    res.status(404);
-    throw new Error('Route not found');
-  }
-  
-  // Create a test event based on provided data or defaults
-  const testEvent = {
-    id: 'test-' + Date.now(),
-    eventName: req.query.eventName || 'test.event',
-    timestamp: new Date(),
-    properties: req.body || {
-      test: true,
-      message: 'This is a test event'
-    }
-  };
-  
   try {
+    const route = await Route.findByPk(req.params.id, {
+      include: [
+        {
+          model: Transformation,
+          as: 'transformation'
+        },
+        {
+          model: Destination,
+          as: 'destination'
+        }
+      ]
+    });
+    
+    if (!route) {
+      res.status(404);
+      throw new Error('Route not found');
+    }
+    
+    // Create a test event based on provided data or defaults
+    const testEvent = {
+      id: 'test-' + Date.now(),
+      eventName: req.query.eventName || 'test.event',
+      timestamp: new Date(),
+      properties: req.body || {
+        test: true,
+        message: 'This is a test event'
+      }
+    };
+    
     // First, check if route matches this event
-    const matches = doesRouteMatchEvent(route, testEvent);
+    const matches = await doesRouteMatchEvent(route, testEvent);
     
     if (!matches) {
       return res.json({
@@ -396,7 +510,7 @@ const testRoute = asyncHandler(async (req, res) => {
     logger.error(`Error testing route:`, {
       error: error.message,
       stack: error.stack,
-      routeId: route.id
+      routeId: req.params.id
     });
     
     res.status(400).json({
@@ -412,24 +526,34 @@ const testRoute = asyncHandler(async (req, res) => {
  * @private
  * @param {Object} route - The route to check
  * @param {Object} event - The event to check against
- * @returns {boolean} - Whether the route matches the event
+ * @returns {Promise<boolean>} - Whether the route matches the event
  */
-function doesRouteMatchEvent(route, event) {
-  // Check if event name matches any of the route's event types
-  const eventNameMatches = eventNameMatchesRoute(event.eventName, route.eventTypes);
-  
-  if (!eventNameMatches) {
-    return false;
+async function doesRouteMatchEvent(route, event) {
+  try {
+    // Check if event name matches any of the route's event types
+    const eventNameMatches = eventNameMatchesRoute(event.eventName, route.eventTypes);
+    
+    if (!eventNameMatches) {
+      return false;
+    }
+    
+    // Check if there are additional conditions
+    if (route.condition) {
+      // This would need to implement the same condition checking logic
+      // that's in the eventRouter service
+      return true; // Simplification for now
+    }
+    
+    return true;
+  } catch (error) {
+    logger.error(`Error checking if route matches event:`, {
+      error: error.message,
+      stack: error.stack,
+      routeId: route.id,
+      eventName: event.eventName
+    });
+    return false; // Fail safely
   }
-  
-  // Check if there are additional conditions
-  if (route.condition) {
-    // This would need to implement the same condition checking logic
-    // that's in the eventRouter service
-    return true; // Simplification for now
-  }
-  
-  return true;
 }
 
 /**
@@ -440,35 +564,45 @@ function doesRouteMatchEvent(route, event) {
  * @returns {boolean} - Whether the event name matches
  */
 function eventNameMatchesRoute(eventName, routeEventTypes) {
-  // Handle wildcard
-  if (routeEventTypes.includes('*')) {
-    return true;
-  }
-  
-  // Check if event name is in the list
-  if (routeEventTypes.includes(eventName)) {
-    return true;
-  }
-  
-  // Check for pattern matches (with *)
-  for (const pattern of routeEventTypes) {
-    if (typeof pattern !== 'string' || !pattern.includes('*')) {
-      continue;
-    }
-    
-    // Convert glob pattern to regex
-    const regexPattern = pattern
-      .replace(/\./g, '\\.')
-      .replace(/\*/g, '.*');
-    
-    const regex = new RegExp(`^${regexPattern}$`);
-    
-    if (regex.test(eventName)) {
+  try {
+    // Handle wildcard
+    if (routeEventTypes.includes('*')) {
       return true;
     }
+    
+    // Check if event name is in the list
+    if (routeEventTypes.includes(eventName)) {
+      return true;
+    }
+    
+    // Check for pattern matches (with *)
+    for (const pattern of routeEventTypes) {
+      if (typeof pattern !== 'string' || !pattern.includes('*')) {
+        continue;
+      }
+      
+      // Convert glob pattern to regex
+      const regexPattern = pattern
+        .replace(/\./g, '\\.')
+        .replace(/\*/g, '.*');
+      
+      const regex = new RegExp(`^${regexPattern}$`);
+      
+      if (regex.test(eventName)) {
+        return true;
+      }
+    }
+    
+    return false;
+  } catch (error) {
+    logger.error(`Error matching event name to route:`, {
+      error: error.message,
+      stack: error.stack,
+      eventName,
+      routeEventTypes
+    });
+    return false; // Fail safely
   }
-  
-  return false;
 }
 
 /**
@@ -479,9 +613,9 @@ function eventNameMatchesRoute(eventName, routeEventTypes) {
  * @returns {Promise<Object>} - The transformed data
  */
 async function applyTransformation(event, transformation) {
-  const webhookForwarder = require('../services/webhookForwarder');
-  
   try {
+    const webhookForwarder = require('../services/webhookForwarder');
+    
     // Create a fake destination with this transformation
     const testDestination = {
       name: `test_${Date.now()}`,
@@ -508,6 +642,7 @@ async function applyTransformation(event, transformation) {
   } catch (error) {
     logger.error(`Error applying transformation:`, {
       error: error.message,
+      stack: error.stack,
       transformationId: transformation.id
     });
     throw error;
@@ -522,19 +657,32 @@ async function applyTransformation(event, transformation) {
  * @returns {Promise<Object>} - The result
  */
 async function testSendToDestination(data, destination) {
-  // This is a mock function to avoid actually sending data
-  // In a real implementation, you might do more validation
-  
-  const isValidUrl = destination.url && 
-    (destination.url.startsWith('http://') || 
-     destination.url.startsWith('https://'));
-     
-  return {
-    success: isValidUrl,
-    details: isValidUrl 
-      ? 'Connection would be attempted to: ' + destination.url
-      : 'Invalid destination URL'
-  };
+  try {
+    // This is a mock function to avoid actually sending data
+    // In a real implementation, you might do more validation
+    
+    const isValidUrl = destination.url && 
+      (destination.url.startsWith('http://') || 
+       destination.url.startsWith('https://'));
+       
+    return {
+      success: isValidUrl,
+      details: isValidUrl 
+        ? 'Connection would be attempted to: ' + destination.url
+        : 'Invalid destination URL'
+    };
+  } catch (error) {
+    logger.error(`Error testing send to destination:`, {
+      error: error.message,
+      stack: error.stack,
+      destinationId: destination.id
+    });
+    
+    return {
+      success: false,
+      details: `Error: ${error.message}`
+    };
+  }
 }
 
 module.exports = {

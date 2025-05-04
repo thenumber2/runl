@@ -10,30 +10,39 @@ const { sequelize } = require('../db/connection');
  * @route POST /api/transformations
  */
 const createTransformation = asyncHandler(async (req, res) => {
-  const transformationData = req.body;
-  
-  // Check if transformation with this name already exists
-  const existingTransformation = await Transformation.findOne({
-    where: { name: transformationData.name }
-  });
-  
-  if (existingTransformation) {
-    res.status(400);
-    throw new Error(`Transformation with name "${transformationData.name}" already exists`);
+  try {
+    const transformationData = req.body;
+    
+    // Check if transformation with this name already exists
+    const existingTransformation = await Transformation.findOne({
+      where: { name: transformationData.name }
+    });
+    
+    if (existingTransformation) {
+      res.status(400);
+      throw new Error(`Transformation with name "${transformationData.name}" already exists`);
+    }
+    
+    // Create the transformation
+    const transformation = await Transformation.create(transformationData);
+    
+    logger.info(`Created new transformation: ${transformation.name}`, {
+      transformationId: transformation.id,
+      type: transformation.type
+    });
+    
+    res.status(201).json({
+      success: true,
+      data: transformation
+    });
+  } catch (error) {
+    logger.error(`Error creating transformation:`, {
+      error: error.message,
+      stack: error.stack,
+      name: req.body?.name
+    });
+    throw error; // Let asyncHandler handle the response
   }
-  
-  // Create the transformation
-  const transformation = await Transformation.create(transformationData);
-  
-  logger.info(`Created new transformation: ${transformation.name}`, {
-    transformationId: transformation.id,
-    type: transformation.type
-  });
-  
-  res.status(201).json({
-    success: true,
-    data: transformation
-  });
 });
 
 /**
@@ -41,28 +50,37 @@ const createTransformation = asyncHandler(async (req, res) => {
  * @route GET /api/transformations
  */
 const getTransformations = asyncHandler(async (req, res) => {
-  // Apply filters if provided
-  const whereClause = {};
-  
-  if (req.query.type) {
-    whereClause.type = req.query.type;
+  try {
+    // Apply filters if provided
+    const whereClause = {};
+    
+    if (req.query.type) {
+      whereClause.type = req.query.type;
+    }
+    
+    if (req.query.enabled !== undefined) {
+      whereClause.enabled = req.query.enabled === 'true';
+    }
+    
+    // Get all transformations
+    const transformations = await Transformation.findAll({
+      where: whereClause,
+      order: [['createdAt', 'DESC']]
+    });
+    
+    res.json({
+      success: true,
+      count: transformations.length,
+      data: transformations
+    });
+  } catch (error) {
+    logger.error(`Error getting transformations:`, {
+      error: error.message,
+      stack: error.stack,
+      filters: req.query
+    });
+    throw error;
   }
-  
-  if (req.query.enabled !== undefined) {
-    whereClause.enabled = req.query.enabled === 'true';
-  }
-  
-  // Get all transformations
-  const transformations = await Transformation.findAll({
-    where: whereClause,
-    order: [['createdAt', 'DESC']]
-  });
-  
-  res.json({
-    success: true,
-    count: transformations.length,
-    data: transformations
-  });
 });
 
 /**
@@ -70,17 +88,26 @@ const getTransformations = asyncHandler(async (req, res) => {
  * @route GET /api/transformations/:id
  */
 const getTransformationById = asyncHandler(async (req, res) => {
-  const transformation = await Transformation.findByPk(req.params.id);
-  
-  if (!transformation) {
-    res.status(404);
-    throw new Error('Transformation not found');
+  try {
+    const transformation = await Transformation.findByPk(req.params.id);
+    
+    if (!transformation) {
+      res.status(404);
+      throw new Error('Transformation not found');
+    }
+    
+    res.json({
+      success: true,
+      data: transformation
+    });
+  } catch (error) {
+    logger.error(`Error getting transformation by ID:`, {
+      error: error.message,
+      stack: error.stack,
+      transformationId: req.params.id
+    });
+    throw error;
   }
-  
-  res.json({
-    success: true,
-    data: transformation
-  });
 });
 
 /**
@@ -88,39 +115,48 @@ const getTransformationById = asyncHandler(async (req, res) => {
  * @route PUT /api/transformations/:id
  */
 const updateTransformation = asyncHandler(async (req, res) => {
-  const transformation = await Transformation.findByPk(req.params.id);
-  
-  if (!transformation) {
-    res.status(404);
-    throw new Error('Transformation not found');
-  }
-  
-  // Check if name is being changed and already exists
-  if (req.body.name && req.body.name !== transformation.name) {
-    const existingTransformation = await Transformation.findOne({
-      where: { name: req.body.name }
+  try {
+    const transformation = await Transformation.findByPk(req.params.id);
+    
+    if (!transformation) {
+      res.status(404);
+      throw new Error('Transformation not found');
+    }
+    
+    // Check if name is being changed and already exists
+    if (req.body.name && req.body.name !== transformation.name) {
+      const existingTransformation = await Transformation.findOne({
+        where: { name: req.body.name }
+      });
+      
+      if (existingTransformation) {
+        res.status(400);
+        throw new Error(`Transformation with name "${req.body.name}" already exists`);
+      }
+    }
+    
+    // Update transformation
+    await transformation.update(req.body);
+    
+    logger.info(`Updated transformation: ${transformation.name}`, {
+      transformationId: transformation.id
     });
     
-    if (existingTransformation) {
-      res.status(400);
-      throw new Error(`Transformation with name "${req.body.name}" already exists`);
-    }
+    // Refresh the router cache so it picks up the changes
+    await eventRouter.refreshRoutes();
+    
+    res.json({
+      success: true,
+      data: transformation
+    });
+  } catch (error) {
+    logger.error(`Error updating transformation:`, {
+      error: error.message,
+      stack: error.stack,
+      transformationId: req.params.id
+    });
+    throw error;
   }
-  
-  // Update transformation
-  await transformation.update(req.body);
-  
-  logger.info(`Updated transformation: ${transformation.name}`, {
-    transformationId: transformation.id
-  });
-  
-  // Refresh the router cache so it picks up the changes
-  await eventRouter.refreshRoutes();
-  
-  res.json({
-    success: true,
-    data: transformation
-  });
 });
 
 /**
@@ -128,6 +164,7 @@ const updateTransformation = asyncHandler(async (req, res) => {
  * @route DELETE /api/transformations/:id
  */
 const deleteTransformation = asyncHandler(async (req, res) => {
+  // Start a transaction
   const transaction = await sequelize.transaction();
   
   try {
@@ -168,7 +205,15 @@ const deleteTransformation = asyncHandler(async (req, res) => {
       message: 'Transformation deleted successfully'
     });
   } catch (error) {
+    // Rollback the transaction on error
     await transaction.rollback();
+    
+    logger.error(`Error deleting transformation:`, {
+      error: error.message,
+      stack: error.stack,
+      transformationId: req.params.id
+    });
+    
     throw error;
   }
 });
@@ -178,31 +223,40 @@ const deleteTransformation = asyncHandler(async (req, res) => {
  * @route PATCH /api/transformations/:id/toggle
  */
 const toggleTransformation = asyncHandler(async (req, res) => {
-  const transformation = await Transformation.findByPk(req.params.id);
-  
-  if (!transformation) {
-    res.status(404);
-    throw new Error('Transformation not found');
+  try {
+    const transformation = await Transformation.findByPk(req.params.id);
+    
+    if (!transformation) {
+      res.status(404);
+      throw new Error('Transformation not found');
+    }
+    
+    // Toggle enabled status
+    const newStatus = !transformation.enabled;
+    
+    await transformation.update({
+      enabled: newStatus
+    });
+    
+    logger.info(`${newStatus ? 'Enabled' : 'Disabled'} transformation: ${transformation.name}`, {
+      transformationId: transformation.id
+    });
+    
+    // Refresh the router cache
+    await eventRouter.refreshRoutes();
+    
+    res.json({
+      success: true,
+      data: transformation
+    });
+  } catch (error) {
+    logger.error(`Error toggling transformation:`, {
+      error: error.message,
+      stack: error.stack,
+      transformationId: req.params.id
+    });
+    throw error;
   }
-  
-  // Toggle enabled status
-  const newStatus = !transformation.enabled;
-  
-  await transformation.update({
-    enabled: newStatus
-  });
-  
-  logger.info(`${newStatus ? 'Enabled' : 'Disabled'} transformation: ${transformation.name}`, {
-    transformationId: transformation.id
-  });
-  
-  // Refresh the router cache
-  await eventRouter.refreshRoutes();
-  
-  res.json({
-    success: true,
-    data: transformation
-  });
 });
 
 /**
@@ -210,25 +264,25 @@ const toggleTransformation = asyncHandler(async (req, res) => {
  * @route POST /api/transformations/:id/test
  */
 const testTransformation = asyncHandler(async (req, res) => {
-  const transformation = await Transformation.findByPk(req.params.id);
-  
-  if (!transformation) {
-    res.status(404);
-    throw new Error('Transformation not found');
-  }
-  
-  // Create a test event
-  const testEvent = {
-    id: 'test-' + Date.now(),
-    eventName: req.query.eventName || 'test.event',
-    timestamp: new Date(),
-    properties: req.body || {
-      test: true,
-      message: 'This is a test event'
-    }
-  };
-  
   try {
+    const transformation = await Transformation.findByPk(req.params.id);
+    
+    if (!transformation) {
+      res.status(404);
+      throw new Error('Transformation not found');
+    }
+    
+    // Create a test event
+    const testEvent = {
+      id: 'test-' + Date.now(),
+      eventName: req.query.eventName || 'test.event',
+      timestamp: new Date(),
+      properties: req.body || {
+        test: true,
+        message: 'This is a test event'
+      }
+    };
+    
     // Apply the transformation
     const result = await applyTransformation(testEvent, transformation);
     
@@ -241,7 +295,7 @@ const testTransformation = asyncHandler(async (req, res) => {
     logger.error(`Error testing transformation:`, {
       error: error.message,
       stack: error.stack,
-      transformationId: transformation.id
+      transformationId: req.params.id
     });
     
     res.status(400).json({
@@ -258,11 +312,12 @@ const testTransformation = asyncHandler(async (req, res) => {
  * @param {Object} event - The event to transform
  * @param {Object} transformation - The transformation to apply
  * @returns {Promise<Object>} - The transformed data
+ * @throws {Error} If transformation fails
  */
 async function applyTransformation(event, transformation) {
-  const webhookForwarder = require('../services/webhookForwarder');
-  
   try {
+    const webhookForwarder = require('../services/webhookForwarder');
+    
     // Create a fake destination with this transformation
     const testDestination = {
       name: `test_${Date.now()}`,
@@ -289,9 +344,10 @@ async function applyTransformation(event, transformation) {
   } catch (error) {
     logger.error(`Error applying transformation:`, {
       error: error.message,
+      stack: error.stack,
       transformationId: transformation.id
     });
-    throw error;
+    throw new Error(`Transformation failed: ${error.message}`);
   }
 }
 
