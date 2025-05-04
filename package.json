@@ -23,7 +23,10 @@
     "express-rate-limit": "^6.11.0",
     "express-async-handler": "^1.2.0",
     "xss": "^1.0.14",
-    "stripe": "^12.5.0"
+    "stripe": "^12.5.0",
+    "node-fetch": "^2.6.7",
+    "jsonpath": "^1.1.1",
+    "lodash": "^4.17.21"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
