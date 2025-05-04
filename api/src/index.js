@@ -18,15 +18,41 @@ const PORT = process.env.PORT || 3000;
 // Basic security and parsing middleware
 app.use(helmet()); // Security headers
 app.use(cors()); // Enable CORS
-app.use(express.json({ limit: '10mb' })); // Parse JSON requests
+
+// Body parsing middleware
+// Important: express.json() would consume the request body
+// We need to preserve the raw body for Stripe webhook signature verification
+app.use((req, res, next) => {
+  // Skip JSON parsing for the Stripe webhook endpoint
+  // This preserves the raw body for signature verification
+  if (req.originalUrl === '/api/integrations/stripe/webhook') {
+    next();
+  } else {
+    express.json({ limit: '10mb' })(req, res, next);
+  }
+});
+
 app.use(express.urlencoded({ extended: true, limit: '10mb' })); // Parse URL-encoded requests
 app.use(morgan('combined')); // Request logging
 
 // Add sanitization middleware - must be after body parsing but before routes
-app.use(sanitizeMiddleware); // Apply sanitization to all routes
+// Skip for Stripe webhook route which needs raw body
+app.use((req, res, next) => {
+  if (req.originalUrl === '/api/integrations/stripe/webhook') {
+    next();
+  } else {
+    sanitizeMiddleware(req, res, next);
+  }
+});
 
-// Apply rate limiting middleware
-app.use(defaultRateLimiter);
+// Apply rate limiting middleware (skip for Stripe webhooks)
+app.use((req, res, next) => {
+  if (req.originalUrl === '/api/integrations/stripe/webhook') {
+    next();
+  } else {
+    defaultRateLimiter(req, res, next);
+  }
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {

@@ -1,6 +1,7 @@
 const setupSchemaRoutes = require('./schemaRoutes');
 const setupDataRoutes = require('./dataRoutes');
 const setupEventRoutes = require('./eventRoutes');
+const setupIntegrationRoutes = require('./integrationRoutes'); // Add this line
 
 // Setup all routes
 const setupRoutes = (app) => {
@@ -18,6 +19,7 @@ const setupRoutes = (app) => {
   setupDataRoutes(apiRouter);
   setupEventRoutes(apiRouter);
   setupSchemaRoutes(apiRouter);
+  setupIntegrationRoutes(apiRouter); // Add this line
   
   // Mount all routes with /api prefix
   app.use('/api', apiRouter);
