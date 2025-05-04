@@ -3,7 +3,8 @@ const Route = require('../models/Route');
 const Transformation = require('../models/Transformation');
 const Destination = require('../models/Destination');
 const jsonpath = require('jsonpath');
-const vm = require('vm');
+const _ = require('lodash');
+const transformerService = require('./transformerService');
 
 /**
  * Event Router Service
@@ -461,39 +462,19 @@ class EventRouter {
    * @returns {Promise<Object>} - The transformed event
    */
   async _applyTransformation(event, transformation) {
-    const webhookForwarder = require('./webhookForwarder');
-
     try {
-      // Check if webhookForwarder is a class or an instance
-      const forwarder = typeof webhookForwarder === 'function' 
-        ? new webhookForwarder() 
-        : webhookForwarder;
+      // Create transformer from configuration
+      const transformFn = transformerService.createTransformer({
+        type: transformation.type,
+        config: transformation.config
+      });
 
-      // Create a test destination with this transformation
-      const testDestination = {
-        name: `route_transform_${Date.now()}`,
-        url: 'https://example.com/webhook', // Won't be used
-        transform: {
-          type: transformation.type,
-          config: transformation.config
-        }
-      };
-
-      // Register with webhook forwarder
-      forwarder.registerDestination(testDestination.name, testDestination);
-
-      // Use webhook forwarder to transform the event
-      const transformFn = forwarder.getDestinations()[testDestination.name].transform;
-      const transformed = await forwarder._safeTransform(
+      // Apply the transformation
+      return await transformerService.safeTransform(
         transformFn,
         event,
-        testDestination.name
+        `route:transformation:${transformation.id}`
       );
-
-      // Clean up
-      forwarder.removeDestination(testDestination.name);
-
-      return transformed;
     } catch (error) {
       logger.error(`Error applying transformation:`, {
         error: error.message,
@@ -549,7 +530,6 @@ class EventRouter {
         properties: event // Use the transformed event as properties
       };
 
-      // Send to the destination
       // Use an identity transform since we already transformed the event
       const identityDestination = {
         name: `temp_identity_${Date.now()}`,

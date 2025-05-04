@@ -11,6 +11,10 @@ const { sanitizeMiddleware } = require('./middleware/sanitization');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { defaultRateLimiter } = require('./middleware/rateLimit');
 const eventRouter = require('./services/eventRouter');
+const webhookForwarder = require('./services/webhookForwarder');
+const { loadDestinationsFromDatabase } = require('./controllers/destinationController');
+// Load transformerService to ensure it's initialized first
+const transformerService = require('./services/transformerService');
 
 // Initialize Express app
 const app = express();
@@ -83,7 +87,22 @@ async function startServer() {
     // Connect to Redis
     await setupRedis();
     
-    // Initialize event router (loads active routes)
+    // Initialize event forwarding system components in the correct order
+    logger.info('Initializing event forwarding system...');
+    
+    // 1. First make sure transformerService is ready
+    logger.info('Transformer service loaded with supported types:', Object.keys(transformerService.transformers));
+    
+    // 2. Load destinations from database to webhook forwarder
+    try {
+      await loadDestinationsFromDatabase();
+      logger.info('Destinations loaded into webhook forwarder');
+    } catch (error) {
+      logger.error('Failed to load destinations:', error);
+      // Continue starting the server even if destinations fail to load
+    }
+    
+    // 3. Initialize event router (loads active routes)
     try {
       await eventRouter.initialize();
       logger.info('Event Router initialized successfully');
