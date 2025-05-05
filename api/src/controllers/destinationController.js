@@ -587,6 +587,7 @@ function sanitizeDestination(destination) {
 /**
  * Load all destinations from the database and register them with the webhook forwarder
  * This should be called during application startup
+ * @returns {Promise<Object>} - Results of the operation (counts of success/failure)
  */
 const loadDestinationsFromDatabase = async () => {
   try {
@@ -596,6 +597,12 @@ const loadDestinationsFromDatabase = async () => {
     });
     
     logger.info(`Loading ${destinations.length} webhook destinations from database`);
+    
+    // If no destinations, return early but don't throw an error
+    if (destinations.length === 0) {
+      logger.info('No webhook destinations found in database');
+      return { success: 0, failed: 0 };
+    }
     
     // Register each destination
     const results = { success: 0, failed: 0 };
@@ -621,7 +628,9 @@ const loadDestinationsFromDatabase = async () => {
       error: error.message,
       stack: error.stack
     });
-    throw error;
+    // Return empty results instead of throwing an error
+    // This allows the application to continue starting up
+    return { success: 0, failed: 0 };
   }
 };
 

@@ -119,6 +119,7 @@ async function forwardEventToDestinations(event) {
     // Process the event through the webhook forwarder
     const forwardResults = await webhookForwarder.processEvent(event);
     
+    // Check if any destinations were forwarded to
     if (forwardResults && forwardResults.length > 0) {
       logger.debug(`Event forwarded to ${forwardResults.length} destinations`, {
         eventId: event.id,
@@ -126,9 +127,15 @@ async function forwardEventToDestinations(event) {
         successCount: forwardResults.filter(r => r.success).length,
         failureCount: forwardResults.filter(r => !r.success).length
       });
+    } else {
+      // This is normal if there are no destinations configured
+      logger.debug(`Event wasn't forwarded to any destinations`, {
+        eventId: event.id,
+        eventName: event.eventName
+      });
     }
     
-    return forwardResults;
+    return forwardResults || [];
   } catch (error) {
     logger.error(`Error in forwardEventToDestinations: ${error.message}`, {
       error: error.message,
@@ -136,7 +143,8 @@ async function forwardEventToDestinations(event) {
       eventId: event.id,
       eventName: event.eventName
     });
-    throw error;
+    // Return empty array instead of throwing to prevent failure
+    return [];
   }
 }
 

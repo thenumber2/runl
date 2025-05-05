@@ -71,7 +71,6 @@ class EventRouter {
   /**
    * Initialize the router by loading all active routes from the database
    * @returns {Promise<void>}
-   * @throws {Error} If routes cannot be loaded
    */
   async initialize() {
     // Prevent multiple simultaneous initialization attempts
@@ -94,6 +93,14 @@ class EventRouter {
         await this.refreshRoutes();
         this.initialized = true;
         logger.info('Event Router initialized successfully');
+      } catch (error) {
+        logger.warn('Error during refreshRoutes, but continuing initialization:', {
+          error: error.message
+        });
+        // Initialize with empty routes array rather than failing
+        this.routes = [];
+        this.initialized = true;
+        logger.info('Event Router initialized with empty routes');
       } finally {
         // Always release the mutex
         release();
@@ -103,8 +110,10 @@ class EventRouter {
         error: error.message,
         stack: error.stack
       });
-      this.initialized = false;
-      throw error;
+      // Set initialized to true anyway with empty routes
+      this.routes = [];
+      this.initialized = true;
+      logger.warn('EventRouter continuing with empty routes due to initialization error');
     } finally {
       this.initializing = false;
     }
@@ -113,7 +122,6 @@ class EventRouter {
   /**
    * Load all active routes from the database
    * @returns {Promise<void>}
-   * @throws {Error} If routes cannot be loaded
    */
   async refreshRoutes() {
     // Acquire mutex lock to ensure exclusive access
@@ -121,31 +129,56 @@ class EventRouter {
     
     try {
       // Get all enabled routes with their transformations and destinations
-      const routes = await Route.findAll({
-        where: { enabled: true },
-        include: [
-          {
-            model: Transformation,
-            as: 'transformation',
-            where: { enabled: true }
-          },
-          {
-            model: Destination,
-            as: 'destination',
-            where: { enabled: true }
-          }
-        ],
-        order: [['priority', 'ASC']]
-      });
+      try {
+        const routes = await Route.findAll({
+          where: { enabled: true },
+          include: [
+            {
+              model: Transformation,
+              as: 'transformation',
+              where: { enabled: true },
+              required: false // Don't require transformations to exist
+            },
+            {
+              model: Destination,
+              as: 'destination',
+              where: { enabled: true },
+              required: false // Don't require destinations to exist
+            }
+          ],
+          order: [['priority', 'ASC']]
+        });
 
-      this.routes = routes;
-      logger.info(`Loaded ${routes.length} active routes`);
+        // Filter out routes that don't have both transformation and destination
+        const validRoutes = routes.filter(route => 
+          route.transformation && route.destination
+        );
+
+        if (validRoutes.length < routes.length) {
+          logger.warn(`Filtered out ${routes.length - validRoutes.length} routes missing transformation or destination`);
+        }
+
+        this.routes = validRoutes;
+        logger.info(`Loaded ${validRoutes.length} active routes`);
+      } catch (error) {
+        // Handle database errors gracefully
+        logger.error('Database error refreshing routes:', {
+          error: error.message,
+          stack: error.stack
+        });
+        
+        // Set empty routes array rather than failing
+        this.routes = [];
+        logger.warn('Continuing with empty routes due to database error');
+      }
     } catch (error) {
       logger.error('Error refreshing routes:', {
         error: error.message,
         stack: error.stack
       });
-      throw error;
+      // Initialize with empty array if we can't load routes
+      this.routes = [];
+      logger.warn('Continuing with empty routes due to error');
     } finally {
       // Always release the mutex
       release();

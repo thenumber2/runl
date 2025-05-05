@@ -290,9 +290,8 @@ async function initializeEventSystem() {
       await loadDestinationsFromDatabase();
       logger.info('Destinations loaded into webhook forwarder');
     } catch (error) {
-      logger.error('Failed to load destinations:', {
-        error: error.message,
-        stack: error.stack
+      logger.warn('Failed to load destinations, but continuing startup:', {
+        error: error.message
       });
       // Continue even if destinations fail to load
     }
@@ -302,18 +301,20 @@ async function initializeEventSystem() {
       await eventRouter.initialize();
       logger.info('Event Router initialized successfully');
     } catch (error) {
-      logger.error('Failed to initialize Event Router:', {
-        error: error.message,
-        stack: error.stack
+      logger.warn('Failed to initialize Event Router, but continuing startup:', {
+        error: error.message
       });
       // Continue even if Event Router fails
     }
+    
+    logger.info('Event forwarding system initialization complete');
   } catch (error) {
     logger.error('Error initializing event system:', {
       error: error.message,
       stack: error.stack
     });
-    throw error;
+    // Log error but don't throw - allow application to start even with event system issues
+    logger.warn('Continuing application startup despite event system initialization failure');
   }
 }
 
