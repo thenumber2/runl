@@ -5,6 +5,9 @@ const { getRedisClient } = require('../services/redis');
 const { sequelize } = require('../db/connection');
 const webhookForwarder = require('../services/webhookForwarder');
 
+// Import WebSocket service
+const websocketService = require('../services/websocketService');
+
 /**
  * Log a new event
  * @route POST /api/events
@@ -38,6 +41,23 @@ const logEvent = asyncHandler(async (req, res) => {
       logger.error(`Error forwarding event: ${forwardError.message}`, {
         error: forwardError.message,
         stack: forwardError.stack,
+        eventId: event.id,
+        eventName
+      });
+    }
+    
+    // Broadcast the event to all connected WebSocket clients
+    try {
+      const broadcastCount = await websocketService.broadcastEvent(event);
+      logger.debug(`Broadcasted event to ${broadcastCount} WebSocket clients`, {
+        eventId: event.id,
+        eventName
+      });
+    } catch (wsError) {
+      // Log but don't fail the request if WebSocket broadcasting fails
+      logger.error(`Error broadcasting event to WebSocket clients: ${wsError.message}`, {
+        error: wsError.message,
+        stack: wsError.stack,
         eventId: event.id,
         eventName
       });
@@ -335,6 +355,17 @@ const forwardEvent = asyncHandler(async (req, res) => {
       successCount: results.filter(r => r.success).length,
       failureCount: results.filter(r => !r.success).length
     });
+    
+    // When manually forwarding an event, also broadcast to WebSocket clients
+    try {
+      await websocketService.broadcastEvent(event);
+    } catch (wsError) {
+      logger.warn(`Error broadcasting manually forwarded event to WebSocket clients: ${wsError.message}`, {
+        error: wsError.message,
+        eventId: event.id
+      });
+      // Continue despite WebSocket error
+    }
     
     res.json({
       success: true,
