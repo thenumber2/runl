@@ -2,8 +2,10 @@ require('dotenv').config();
 const express = require('express');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const cors = require('cors');
+const fs = require('fs');
 const { setupRoutes } = require('./routes');
-const { connectToDatabase, closeConnection } = require('./db/connection');
+const { connectToDatabase, closeConnection, sequelize } = require('./db/connection');
 const redisService = require('./services/redis');
 const logger = require('./utils/logger');
 const { sanitizeMiddleware } = require('./middleware/sanitization');
@@ -101,7 +103,6 @@ function configureMiddleware(app) {
     logger.warn('Custom CORS configuration not found, using default CORS', {
       error: corsError.message
     });
-    const cors = require('cors');
     app.use(cors());
   }
   
@@ -244,7 +245,7 @@ async function startServer() {
     const server = http.createServer(app);
     
     // Initialize WebSocket server
-    websocketService.initialize(server);
+    await websocketService.initialize(server);
     
     // Determine client origin for logging
     let clientOrigin = 'auto-detect';
@@ -367,9 +368,6 @@ async function handleShutdownSignal() {
     process.exit(1);
   }
 }
-
-// Import fs for Docker detection
-const fs = require('fs');
 
 // Start the server
 startServer();

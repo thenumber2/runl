@@ -1,7 +1,7 @@
 const asyncHandler = require('express-async-handler');
 const Event = require('../models/Event');
 const logger = require('../utils/logger');
-const { getRedisClient } = require('../services/redis');
+const redisService = require('../services/redis');
 const { sequelize } = require('../db/connection');
 const webhookForwarder = require('../services/webhookForwarder');
 
@@ -147,9 +147,8 @@ async function forwardEventToDestinations(event) {
  */
 async function invalidateEventCache() {
   try {
-    const redisClient = getRedisClient();
-    if (redisClient?.isOpen) {
-      await redisClient.del('api:/api/events');
+    if (redisService.isRedisConnected()) {
+      await redisService.deleteByPattern('api:/api/events*');
     }
   } catch (error) {
     logger.error(`Error invalidating event cache: ${error.message}`, {
@@ -171,11 +170,24 @@ const getEvents = asyncHandler(async (req, res) => {
     const offset = (page - 1) * limit;
     const eventName = req.query.eventName;
     const userId = req.query.userId;
+    const startDate = req.query.startDate ? new Date(req.query.startDate) : null;
+    const endDate = req.query.endDate ? new Date(req.query.endDate) : null;
     
     // Build query conditions
     const whereClause = {};
     if (eventName) {
       whereClause.eventName = eventName;
+    }
+    
+    // Add date range filter
+    if (startDate || endDate) {
+      whereClause.timestamp = {};
+      if (startDate) {
+        whereClause.timestamp[sequelize.Op.gte] = startDate;
+      }
+      if (endDate) {
+        whereClause.timestamp[sequelize.Op.lte] = endDate;
+      }
     }
     
     // Add userId filter if provided - using parameterized query

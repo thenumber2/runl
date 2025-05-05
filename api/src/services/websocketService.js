@@ -1,6 +1,5 @@
-const { Server } = require('socket.io');
 const logger = require('../utils/logger');
-const eventRouter = require('./eventRouter');
+const { Server } = require('socket.io');
 const Event = require('../models/Event');
 const { sequelize } = require('../db/connection');
 
