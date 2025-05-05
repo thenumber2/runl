@@ -1,11 +1,10 @@
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const cors = require('cors');
-const fs = require('fs');
 const { setupRoutes } = require('./routes');
-const { connectToDatabase, closeConnection, sequelize } = require('./db/connection');
+const { connectToDatabase, closeConnection } = require('./db/connection');
 const redisService = require('./services/redis');
 const logger = require('./utils/logger');
 const { sanitizeMiddleware } = require('./middleware/sanitization');
@@ -17,9 +16,6 @@ const { loadDestinationsFromDatabase } = require('./controllers/destinationContr
 
 // Make sure transformerService is initialized first
 const transformerService = require('./services/transformerService');
-
-// Import WebSocket service
-const websocketService = require('./services/websocketService');
 
 // Initialize Express app
 const app = express();
@@ -63,48 +59,9 @@ async function initializeApp() {
  * @param {Object} app - Express app
  */
 function configureMiddleware(app) {
-  // Security middleware with flexible content security policy
-  const cspDirectives = {
-    connectSrc: ["'self'"]
-  };
-  
-  // Add client origin to CSP if it exists
-  if (process.env.CLIENT_ORIGIN) {
-    // Handle comma-separated origins
-    if (process.env.CLIENT_ORIGIN.includes(',')) {
-      const origins = process.env.CLIENT_ORIGIN.split(',').map(origin => origin.trim());
-      cspDirectives.connectSrc.push(...origins);
-    } else {
-      cspDirectives.connectSrc.push(process.env.CLIENT_ORIGIN);
-    }
-  }
-  
-  // Add common development origins for convenience
-  cspDirectives.connectSrc.push(
-    'http://localhost:3001', 
-    'https://localhost:3001',
-    'http://127.0.0.1:3001'
-  );
-  
-  // Configure Helmet with appropriate CSP
-  app.use(helmet({
-    contentSecurityPolicy: {
-      directives: cspDirectives
-    }
-  }));
-  
-  // Use custom CORS configuration that supports various environments
-  try {
-    const configureCors = require('./middleware/corsConfig');
-    app.use(configureCors());
-    logger.info('Custom CORS configuration applied');
-  } catch (corsError) {
-    // Fallback to basic CORS if custom configuration is not available
-    logger.warn('Custom CORS configuration not found, using default CORS', {
-      error: corsError.message
-    });
-    app.use(cors());
-  }
+  // Security middleware
+  app.use(helmet()); // Security headers
+  app.use(cors()); // Enable CORS
   
   // Special handling for Stripe webhook
   app.use((req, res, next) => {
@@ -154,23 +111,13 @@ function setupHealthCheck(app) {
       // Check Redis connection
       const redisStatus = redisService.isRedisConnected() ? 'Connected' : 'Disconnected';
       
-      // Check WebSocket status
-      const wsStatus = websocketService.initialized ? 'Initialized' : 'Not Initialized';
-      
-      // Determine if running in Docker
-      const isDocker = fs.existsSync('/.dockerenv') || process.env.RUNNING_IN_DOCKER === 'true';
-      
       res.status(200).json({
         status: 'UP',
         apiVersion: '1.0.0',
         timestamp: new Date(),
         database: dbStatus,
         redis: redisStatus,
-        websocket: wsStatus,
-        isDocker: isDocker,
-        environment: process.env.NODE_ENV || 'development',
-        clientOrigin: process.env.CLIENT_ORIGIN || 'auto-detect',
-        corsAllowAll: process.env.CORS_ALLOW_ALL === 'true'
+        environment: process.env.NODE_ENV || 'development'
       });
     } catch (error) {
       logger.error('Health check error:', {
@@ -209,24 +156,14 @@ async function checkDatabaseHealth() {
  */
 async function startServer() {
   try {
-    // Environment detection for services
-    const isDocker = fs.existsSync('/.dockerenv') || process.env.RUNNING_IN_DOCKER === 'true';
-    
-    // Default host values based on environment
-    const defaultRedisHost = isDocker ? 'redis' : 'localhost';
-    const defaultPostgresHost = isDocker ? 'postgres' : 'localhost';
-    
     // Connect to PostgreSQL
     await connectToDatabase();
-    logger.info('Database connection established', {
-      host: process.env.POSTGRES_HOST || defaultPostgresHost,
-      database: process.env.POSTGRES_DB || 'runl_events'
-    });
+    logger.info('Database connection established');
     
     // Configure and connect to Redis
     await redisService
       .configure({
-        host: process.env.REDIS_HOST || defaultRedisHost,
+        host: process.env.REDIS_HOST || 'redis',
         port: process.env.REDIS_PORT || 6379,
         maxReconnectAttempts: 10,
         initialBackoff: 100,
@@ -240,29 +177,9 @@ async function startServer() {
     // Initialize Express app
     await initializeApp();
     
-    // Create HTTP server from Express app
-    const http = require('http');
-    const server = http.createServer(app);
-    
-    // Initialize WebSocket server
-    await websocketService.initialize(server);
-    
-    // Determine client origin for logging
-    let clientOrigin = 'auto-detect';
-    if (process.env.CLIENT_ORIGIN) {
-      clientOrigin = process.env.CLIENT_ORIGIN;
-      if (clientOrigin.includes(',')) {
-        clientOrigin = `multiple origins (${clientOrigin.split(',').length})`;
-      }
-    } else if (process.env.CORS_ALLOW_ALL === 'true') {
-      clientOrigin = 'all origins (CORS_ALLOW_ALL=true)';
-    }
-    
     // Start listening
-    server.listen(PORT, () => {
-      logger.info(`Server running on port ${PORT} with WebSocket support`);
-      logger.info(`Environment: ${isDocker ? 'Docker' : 'Standard'}`);
-      logger.info(`Accepting client connections from: ${clientOrigin}`);
+    app.listen(PORT, () => {
+      logger.info(`Server running on port ${PORT}`);
     });
   } catch (error) {
     logger.error('Failed to start server:', {
@@ -290,8 +207,9 @@ async function initializeEventSystem() {
       await loadDestinationsFromDatabase();
       logger.info('Destinations loaded into webhook forwarder');
     } catch (error) {
-      logger.warn('Failed to load destinations, but continuing startup:', {
-        error: error.message
+      logger.error('Failed to load destinations:', {
+        error: error.message,
+        stack: error.stack
       });
       // Continue even if destinations fail to load
     }
@@ -301,20 +219,18 @@ async function initializeEventSystem() {
       await eventRouter.initialize();
       logger.info('Event Router initialized successfully');
     } catch (error) {
-      logger.warn('Failed to initialize Event Router, but continuing startup:', {
-        error: error.message
+      logger.error('Failed to initialize Event Router:', {
+        error: error.message,
+        stack: error.stack
       });
       // Continue even if Event Router fails
     }
-    
-    logger.info('Event forwarding system initialization complete');
   } catch (error) {
     logger.error('Error initializing event system:', {
       error: error.message,
       stack: error.stack
     });
-    // Log error but don't throw - allow application to start even with event system issues
-    logger.warn('Continuing application startup despite event system initialization failure');
+    throw error;
   }
 }
 

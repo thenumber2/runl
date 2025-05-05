@@ -1,12 +1,9 @@
 const asyncHandler = require('express-async-handler');
 const Event = require('../models/Event');
 const logger = require('../utils/logger');
-const redisService = require('../services/redis');
+const { getRedisClient } = require('../services/redis');
 const { sequelize } = require('../db/connection');
 const webhookForwarder = require('../services/webhookForwarder');
-
-// Import WebSocket service
-const websocketService = require('../services/websocketService');
 
 /**
  * Log a new event
@@ -41,23 +38,6 @@ const logEvent = asyncHandler(async (req, res) => {
       logger.error(`Error forwarding event: ${forwardError.message}`, {
         error: forwardError.message,
         stack: forwardError.stack,
-        eventId: event.id,
-        eventName
-      });
-    }
-    
-    // Broadcast the event to all connected WebSocket clients
-    try {
-      const broadcastCount = await websocketService.broadcastEvent(event);
-      logger.debug(`Broadcasted event to ${broadcastCount} WebSocket clients`, {
-        eventId: event.id,
-        eventName
-      });
-    } catch (wsError) {
-      // Log but don't fail the request if WebSocket broadcasting fails
-      logger.error(`Error broadcasting event to WebSocket clients: ${wsError.message}`, {
-        error: wsError.message,
-        stack: wsError.stack,
         eventId: event.id,
         eventName
       });
@@ -119,7 +99,6 @@ async function forwardEventToDestinations(event) {
     // Process the event through the webhook forwarder
     const forwardResults = await webhookForwarder.processEvent(event);
     
-    // Check if any destinations were forwarded to
     if (forwardResults && forwardResults.length > 0) {
       logger.debug(`Event forwarded to ${forwardResults.length} destinations`, {
         eventId: event.id,
@@ -127,15 +106,9 @@ async function forwardEventToDestinations(event) {
         successCount: forwardResults.filter(r => r.success).length,
         failureCount: forwardResults.filter(r => !r.success).length
       });
-    } else {
-      // This is normal if there are no destinations configured
-      logger.debug(`Event wasn't forwarded to any destinations`, {
-        eventId: event.id,
-        eventName: event.eventName
-      });
     }
     
-    return forwardResults || [];
+    return forwardResults;
   } catch (error) {
     logger.error(`Error in forwardEventToDestinations: ${error.message}`, {
       error: error.message,
@@ -143,8 +116,7 @@ async function forwardEventToDestinations(event) {
       eventId: event.id,
       eventName: event.eventName
     });
-    // Return empty array instead of throwing to prevent failure
-    return [];
+    throw error;
   }
 }
 
@@ -155,8 +127,9 @@ async function forwardEventToDestinations(event) {
  */
 async function invalidateEventCache() {
   try {
-    if (redisService.isRedisConnected()) {
-      await redisService.deleteByPattern('api:/api/events*');
+    const redisClient = getRedisClient();
+    if (redisClient?.isOpen) {
+      await redisClient.del('api:/api/events');
     }
   } catch (error) {
     logger.error(`Error invalidating event cache: ${error.message}`, {
@@ -178,24 +151,11 @@ const getEvents = asyncHandler(async (req, res) => {
     const offset = (page - 1) * limit;
     const eventName = req.query.eventName;
     const userId = req.query.userId;
-    const startDate = req.query.startDate ? new Date(req.query.startDate) : null;
-    const endDate = req.query.endDate ? new Date(req.query.endDate) : null;
     
     // Build query conditions
     const whereClause = {};
     if (eventName) {
       whereClause.eventName = eventName;
-    }
-    
-    // Add date range filter
-    if (startDate || endDate) {
-      whereClause.timestamp = {};
-      if (startDate) {
-        whereClause.timestamp[sequelize.Op.gte] = startDate;
-      }
-      if (endDate) {
-        whereClause.timestamp[sequelize.Op.lte] = endDate;
-      }
     }
     
     // Add userId filter if provided - using parameterized query
@@ -375,17 +335,6 @@ const forwardEvent = asyncHandler(async (req, res) => {
       successCount: results.filter(r => r.success).length,
       failureCount: results.filter(r => !r.success).length
     });
-    
-    // When manually forwarding an event, also broadcast to WebSocket clients
-    try {
-      await websocketService.broadcastEvent(event);
-    } catch (wsError) {
-      logger.warn(`Error broadcasting manually forwarded event to WebSocket clients: ${wsError.message}`, {
-        error: wsError.message,
-        eventId: event.id
-      });
-      // Continue despite WebSocket error
-    }
     
     res.json({
       success: true,

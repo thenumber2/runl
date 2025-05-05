@@ -114,12 +114,6 @@ class WebhookForwarder {
         return [];
       }
 
-      // If no destinations are registered, return early with empty results
-      if (Object.keys(this.destinations).length === 0) {
-        logger.debug(`No destinations registered, skipping event: ${event.eventName}`);
-        return [];
-      }
-
       logger.debug(`Processing event for webhook forwarding: ${event.eventName}`);
       const results = [];
 
@@ -130,12 +124,6 @@ class WebhookForwarder {
           config.eventTypes.includes(event.eventName)
         );
       });
-
-      // If no matching destinations, return early
-      if (matchingDestinations.length === 0) {
-        logger.debug(`No matching destinations for event: ${event.eventName}`);
-        return [];
-      }
 
       // Send to each matching destination
       for (const [name, config] of matchingDestinations) {
