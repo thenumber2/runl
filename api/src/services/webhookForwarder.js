@@ -24,7 +24,6 @@ class WebhookForwarder {
    * @param {Object} [config.headers] - Additional headers to send
    * @param {string} [config.secret] - Secret for signing payloads (if supported)
    * @returns {Object} - The registered destination
-   * @throws {Error} If required parameters are missing
    */
   registerDestination(name, config) {
     if (!name || !config.url) {
@@ -108,52 +107,43 @@ class WebhookForwarder {
    * @returns {Promise<Array>} - Results of the forwarding operations
    */
   async processEvent(event) {
-    try {
-      if (!event || !event.eventName) {
-        logger.warn('Attempted to process invalid event');
-        return [];
-      }
-
-      logger.debug(`Processing event for webhook forwarding: ${event.eventName}`);
-      const results = [];
-
-      // Find all destinations that match this event type
-      const matchingDestinations = Object.entries(this.destinations).filter(([name, config]) => {
-        return config.enabled && (
-          config.eventTypes === '*' || 
-          config.eventTypes.includes(event.eventName)
-        );
-      });
-
-      // Send to each matching destination
-      for (const [name, config] of matchingDestinations) {
-        try {
-          const result = await this._sendToDestination(name, config, event);
-          results.push(result);
-        } catch (error) {
-          logger.error(`Error forwarding event to ${name}:`, {
-            error: error.message,
-            eventId: event.id,
-            eventName: event.eventName
-          });
-          
-          results.push({
-            destination: name,
-            success: false,
-            error: error.message
-          });
-        }
-      }
-
-      return results;
-    } catch (error) {
-      logger.error('Unexpected error in processEvent:', {
-        error: error.message,
-        stack: error.stack,
-        eventName: event?.eventName
-      });
+    if (!event || !event.eventName) {
+      logger.warn('Attempted to process invalid event');
       return [];
     }
+
+    logger.debug(`Processing event for webhook forwarding: ${event.eventName}`);
+    const results = [];
+
+    // Find all destinations that match this event type
+    const matchingDestinations = Object.entries(this.destinations).filter(([name, config]) => {
+      return config.enabled && (
+        config.eventTypes === '*' || 
+        config.eventTypes.includes(event.eventName)
+      );
+    });
+
+    // Send to each matching destination
+    for (const [name, config] of matchingDestinations) {
+      try {
+        const result = await this._sendToDestination(name, config, event);
+        results.push(result);
+      } catch (error) {
+        logger.error(`Error forwarding event to ${name}:`, {
+          error: error.message,
+          eventId: event.id,
+          eventName: event.eventName
+        });
+        
+        results.push({
+          destination: name,
+          success: false,
+          error: error.message
+        });
+      }
+    }
+
+    return results;
   }
 
   /**
@@ -163,12 +153,11 @@ class WebhookForwarder {
    * @param {Object} config - Destination configuration
    * @param {Object} event - Event to send
    * @returns {Promise<Object>} - Result of the send operation
-   * @throws {Error} If the webhook request fails
    */
   async _sendToDestination(name, config, event) {
+    logger.debug(`Forwarding event ${event.eventName} to ${name}`);
+    
     try {
-      logger.debug(`Forwarding event ${event.eventName} to ${name}`);
-      
       // Transform the event according to destination requirements
       const payload = await transformerService.safeTransform(
         config.transform, 
@@ -189,7 +178,33 @@ class WebhookForwarder {
       }
       
       // Determine request body based on content type
-      const body = await this._prepareRequestBody(payload, headers);
+      let body;
+      const contentType = headers['Content-Type']?.toLowerCase() || 'application/json';
+      
+      if (contentType.includes('application/x-www-form-urlencoded')) {
+        // Convert payload to URL-encoded form data
+        body = new URLSearchParams();
+        Object.entries(payload).forEach(([key, value]) => {
+          if (typeof value === 'object') {
+            body.append(key, JSON.stringify(value));
+          } else {
+            body.append(key, String(value));
+          }
+        });
+      } else if (contentType.includes('multipart/form-data')) {
+        // Use FormData for multipart requests
+        body = new FormData();
+        Object.entries(payload).forEach(([key, value]) => {
+          if (typeof value === 'object') {
+            body.append(key, JSON.stringify(value));
+          } else {
+            body.append(key, String(value));
+          }
+        });
+      } else {
+        // Default to JSON
+        body = JSON.stringify(payload);
+      }
       
       // Send the webhook request
       const response = await fetch(config.url, {
@@ -205,8 +220,13 @@ class WebhookForwarder {
         throw new Error(`HTTP error ${response.status}: ${errorText}`);
       }
       
-      // Parse response data
-      const responseData = await this._parseResponseData(response);
+      // Try to parse response as JSON, but don't fail if it's not
+      let responseData;
+      try {
+        responseData = await response.json();
+      } catch (e) {
+        responseData = await response.text();
+      }
       
       logger.info(`Successfully forwarded event to ${name}`);
       
@@ -228,64 +248,6 @@ class WebhookForwarder {
   }
   
   /**
-   * Prepare request body based on content type
-   * @private
-   * @param {Object} payload - The payload to send
-   * @param {Object} headers - Request headers
-   * @returns {string|URLSearchParams|FormData} - Prepared request body
-   */
-  async _prepareRequestBody(payload, headers) {
-    const contentType = headers['Content-Type']?.toLowerCase() || 'application/json';
-    
-    try {
-      if (contentType.includes('application/x-www-form-urlencoded')) {
-        // Convert payload to URL-encoded form data
-        const body = new URLSearchParams();
-        Object.entries(payload).forEach(([key, value]) => {
-          if (typeof value === 'object') {
-            body.append(key, JSON.stringify(value));
-          } else {
-            body.append(key, String(value));
-          }
-        });
-        return body;
-      } else if (contentType.includes('multipart/form-data')) {
-        // Use FormData for multipart requests
-        const body = new FormData();
-        Object.entries(payload).forEach(([key, value]) => {
-          if (typeof value === 'object') {
-            body.append(key, JSON.stringify(value));
-          } else {
-            body.append(key, String(value));
-          }
-        });
-        return body;
-      } else {
-        // Default to JSON
-        return JSON.stringify(payload);
-      }
-    } catch (error) {
-      logger.error('Error preparing request body:', error);
-      throw new Error(`Failed to prepare request body: ${error.message}`);
-    }
-  }
-  
-  /**
-   * Parse response data, handling both JSON and text
-   * @private
-   * @param {Response} response - Fetch response object
-   * @returns {Object|string} - Parsed response data
-   */
-  async _parseResponseData(response) {
-    try {
-      return await response.json();
-    } catch (error) {
-      // If JSON parsing fails, return as text
-      return await response.text();
-    }
-  }
-  
-  /**
    * Generate a signature for the payload
    * @private
    * @param {Object} payload - The payload to sign
@@ -293,14 +255,9 @@ class WebhookForwarder {
    * @returns {string} - The signature
    */
   _generateSignature(payload, secret) {
-    try {
-      const hmac = crypto.createHmac('sha256', secret);
-      hmac.update(typeof payload === 'string' ? payload : JSON.stringify(payload));
-      return hmac.digest('hex');
-    } catch (error) {
-      logger.error('Error generating signature:', error);
-      throw new Error(`Failed to generate signature: ${error.message}`);
-    }
+    const hmac = crypto.createHmac('sha256', secret);
+    hmac.update(typeof payload === 'string' ? payload : JSON.stringify(payload));
+    return hmac.digest('hex');
   }
 }
 

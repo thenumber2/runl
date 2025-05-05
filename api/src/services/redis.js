@@ -6,7 +6,6 @@ const logger = require('../utils/logger');
  * 
  * A centralized service for managing Redis connections and operations
  * with improved error handling, connection management, and simplified APIs.
- * Fixed to prevent memory leaks from event listeners.
  */
 class RedisService {
   constructor() {
@@ -16,13 +15,6 @@ class RedisService {
     this.options = {};
     this.connectionAttempts = 0;
     this.maxReconnectAttempts = 10;
-    
-    // Bind event handlers once in the constructor to maintain reference consistency
-    this._boundHandleError = this._handleError.bind(this);
-    this._boundHandleConnect = this._handleConnect.bind(this);
-    this._boundHandleReconnecting = this._handleReconnecting.bind(this);
-    this._boundHandleReady = this._handleReady.bind(this);
-    this._boundHandleEnd = this._handleEnd.bind(this);
   }
 
   /**
@@ -50,27 +42,24 @@ class RedisService {
    * @returns {Promise<RedisService>} - Redis service instance
    */
   async connect() {
+    if (this.isConnected) {
+      return this;
+    }
+    
+    if (this.connecting) {
+      logger.debug('Redis connection already in progress');
+      return this;
+    }
+    
+    this.connecting = true;
+    this.connectionAttempts = 0;
+    
     try {
-      if (this.isConnected) {
-        return this;
-      }
-      
-      if (this.connecting) {
-        logger.debug('Redis connection already in progress');
-        return this;
-      }
-      
-      this.connecting = true;
-      this.connectionAttempts = 0;
-      
       const host = this.options.host || process.env.REDIS_HOST || 'redis';
       const port = this.options.port || process.env.REDIS_PORT || 6379;
       const url = `redis://${host}:${port}`;
       
       logger.info(`Connecting to Redis at ${host}:${port}`);
-      
-      // Clean up existing client if it exists
-      await this._cleanupExistingClient();
       
       this.client = createClient({
         url,
@@ -95,8 +84,12 @@ class RedisService {
         }
       });
 
-      // Set up event handlers using bound methods from constructor
-      this._attachEventListeners();
+      // Set up event handlers
+      this.client.on('error', this._handleError.bind(this));
+      this.client.on('connect', this._handleConnect.bind(this));
+      this.client.on('reconnecting', this._handleReconnecting.bind(this));
+      this.client.on('ready', this._handleReady.bind(this));
+      this.client.on('end', this._handleEnd.bind(this));
 
       await this.client.connect();
       this.isConnected = true;
@@ -107,68 +100,20 @@ class RedisService {
     } catch (error) {
       this.isConnected = false;
       this.connecting = false;
-      logger.error('Failed to connect to Redis:', {
-        error: error.message,
-        stack: error.stack,
-        host: this.options.host,
-        port: this.options.port
-      });
+      logger.error('Failed to connect to Redis:', error);
       
-      await this._cleanupExistingClient();
+      if (this.client) {
+        try {
+          await this.client.quit();
+        } catch (quitError) {
+          logger.debug('Error while quitting Redis client:', quitError);
+        }
+        this.client = null;
+      }
       
       // Allow application to continue without Redis
       logger.warn('Application running without Redis caching');
       return this;
-    }
-  }
-  
-  /**
-   * Attach event listeners to the Redis client
-   * @private
-   */
-  _attachEventListeners() {
-    if (!this.client) return;
-    
-    this.client.on('error', this._boundHandleError);
-    this.client.on('connect', this._boundHandleConnect);
-    this.client.on('reconnecting', this._boundHandleReconnecting);
-    this.client.on('ready', this._boundHandleReady);
-    this.client.on('end', this._boundHandleEnd);
-  }
-  
-  /**
-   * Remove event listeners from the Redis client
-   * @private
-   */
-  _removeEventListeners() {
-    if (!this.client) return;
-    
-    this.client.removeListener('error', this._boundHandleError);
-    this.client.removeListener('connect', this._boundHandleConnect);
-    this.client.removeListener('reconnecting', this._boundHandleReconnecting);
-    this.client.removeListener('ready', this._boundHandleReady);
-    this.client.removeListener('end', this._boundHandleEnd);
-  }
-  
-  /**
-   * Clean up existing Redis client
-   * @private
-   * @returns {Promise<void>}
-   */
-  async _cleanupExistingClient() {
-    if (this.client) {
-      try {
-        // Remove all event listeners to prevent memory leaks
-        this._removeEventListeners();
-        
-        // Quit if the connection is still open
-        if (this.client.isOpen) {
-          await this.client.quit();
-        }
-      } catch (quitError) {
-        logger.debug('Error while cleaning up Redis client:', quitError);
-      }
-      this.client = null;
     }
   }
 
@@ -177,7 +122,7 @@ class RedisService {
    * @returns {Object|null} - Redis client or null if not connected
    */
   getClient() {
-    return this.isRedisConnected() && this.client ? this.client : null;
+    return this.isConnected && this.client ? this.client : null;
   }
 
   /**
@@ -185,7 +130,7 @@ class RedisService {
    * @returns {boolean} - Connection status
    */
   isRedisConnected() {
-    return this.isConnected && this.client?.isOpen;
+    return this.isConnected;
   }
 
   /**
@@ -193,20 +138,17 @@ class RedisService {
    * @returns {Promise<void>}
    */
   async disconnect() {
-    try {
-      await this._cleanupExistingClient();
-      this.isConnected = false;
-      logger.info('Redis disconnected successfully');
-    } catch (error) {
-      logger.error('Error disconnecting from Redis:', {
-        error: error.message,
-        stack: error.stack
-      });
-      
-      // Force cleanup even on error
-      this.isConnected = false;
-      this.client = null;
+    if (this.client && this.client.isOpen) {
+      try {
+        await this.client.quit();
+        logger.info('Redis disconnected successfully');
+      } catch (error) {
+        logger.error('Error disconnecting from Redis:', error);
+      }
     }
+    
+    this.isConnected = false;
+    this.client = null;
   }
 
   /**
@@ -215,29 +157,15 @@ class RedisService {
    * @returns {Promise<any|null>} - Cached value or null if not found
    */
   async get(key) {
+    if (!this.isConnected || !this.client?.isOpen) {
+      return null;
+    }
+    
     try {
-      if (!this.isRedisConnected()) {
-        return null;
-      }
-      
       const data = await this.client.get(key);
-      
-      if (!data) {
-        return null;
-      }
-      
-      try {
-        return JSON.parse(data);
-      } catch (parseError) {
-        // If parsing fails, return the raw string
-        logger.debug(`Redis parse error for key ${key}, returning raw string:`, parseError);
-        return data;
-      }
+      return data ? JSON.parse(data) : null;
     } catch (error) {
-      logger.error(`Redis get error for key ${key}:`, {
-        error: error.message,
-        stack: error.stack
-      });
+      logger.error(`Redis get error for key ${key}:`, error);
       return null;
     }
   }
@@ -251,29 +179,21 @@ class RedisService {
    * @returns {Promise<boolean>} - Success status
    */
   async set(key, value, options = {}) {
+    if (!this.isConnected || !this.client?.isOpen) {
+      return false;
+    }
+    
     try {
-      if (!this.isRedisConnected()) {
-        return false;
-      }
-      
       const setOptions = {};
       
       if (options.ttl) {
         setOptions.EX = options.ttl;
       }
       
-      // Handle different value types
-      const valueToStore = typeof value === 'string' 
-        ? value 
-        : JSON.stringify(value);
-      
-      await this.client.set(key, valueToStore, setOptions);
+      await this.client.set(key, JSON.stringify(value), setOptions);
       return true;
     } catch (error) {
-      logger.error(`Redis set error for key ${key}:`, {
-        error: error.message,
-        stack: error.stack
-      });
+      logger.error(`Redis set error for key ${key}:`, error);
       return false;
     }
   }
@@ -284,11 +204,11 @@ class RedisService {
    * @returns {Promise<boolean>} - Success status
    */
   async del(key) {
+    if (!this.isConnected || !this.client?.isOpen) {
+      return false;
+    }
+    
     try {
-      if (!this.isRedisConnected()) {
-        return false;
-      }
-      
       if (Array.isArray(key)) {
         await this.client.del(key);
       } else {
@@ -296,10 +216,7 @@ class RedisService {
       }
       return true;
     } catch (error) {
-      logger.error(`Redis delete error for key ${Array.isArray(key) ? 'multiple keys' : key}:`, {
-        error: error.message,
-        stack: error.stack
-      });
+      logger.error(`Redis delete error for key ${key}:`, error);
       return false;
     }
   }
@@ -310,14 +227,14 @@ class RedisService {
    * @returns {Promise<number>} - Number of keys deleted
    */
   async deleteByPattern(pattern) {
+    if (!this.isConnected || !this.client?.isOpen) {
+      return 0;
+    }
+    
     try {
-      if (!this.isRedisConnected()) {
-        return 0;
-      }
-      
       const keys = await this.client.keys(pattern);
       
-      if (!keys || keys.length === 0) {
+      if (keys.length === 0) {
         return 0;
       }
       
@@ -325,10 +242,7 @@ class RedisService {
       logger.debug(`Deleted ${keys.length} keys matching pattern: ${pattern}`);
       return keys.length;
     } catch (error) {
-      logger.error(`Redis deleteByPattern error for ${pattern}:`, {
-        error: error.message,
-        stack: error.stack
-      });
+      logger.error(`Redis deleteByPattern error for ${pattern}:`, error);
       return 0;
     }
   }
@@ -340,15 +254,14 @@ class RedisService {
    */
   cacheMiddleware(duration = 60) {
     return async (req, res, next) => {
-      try {
-        // Skip caching if Redis isn't connected
-        if (!this.isRedisConnected()) {
-          return next();
-        }
+      // Skip caching if Redis isn't connected
+      if (!this.isConnected || !this.client?.isOpen) {
+        return next();
+      }
 
-        const key = `api:${req.originalUrl}`;
-        
-        // Attempt to get from cache
+      const key = `api:${req.originalUrl}`;
+      
+      try {
         const cachedData = await this.get(key);
         
         if (cachedData) {
@@ -362,27 +275,20 @@ class RedisService {
         const originalJson = res.json;
         
         // Override res.json to cache the response before sending
-        res.json = (data) => {
+        res.json = function(data) {
           if (res.statusCode === 200) {
             // Don't wait for the cache to be set
             this.set(key, data, { ttl: duration })
               .catch(err => {
-                logger.error(`Failed to set cache for ${key}:`, {
-                  error: err.message,
-                  stack: err.stack
-                });
+                logger.error(`Failed to set cache for ${key}:`, err);
               });
           }
-          return originalJson.call(res, data);
-        };
+          return originalJson.call(this, data);
+        }.bind(this);
         
         next();
       } catch (error) {
-        logger.error('Redis cache middleware error:', {
-          error: error.message,
-          stack: error.stack,
-          url: req.originalUrl
-        });
+        logger.error('Redis cache middleware error:', error);
         // Continue without caching
         next();
       }
@@ -392,10 +298,7 @@ class RedisService {
   // Private event handlers
   _handleError(err) {
     this.isConnected = false;
-    logger.error('Redis Client Error:', {
-      error: err.message,
-      stack: err.stack
-    });
+    logger.error('Redis Client Error:', err);
   }
 
   _handleConnect() {

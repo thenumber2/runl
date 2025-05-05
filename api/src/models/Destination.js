@@ -108,154 +108,35 @@ const Destination = sequelize.define('Destination', {
     }
   ],
   hooks: {
-    // Encrypt secret before saving with improved error handling
-    beforeSave: async (destination, options) => {
+    // Encrypt secret before saving
+    beforeSave: async (destination) => {
       try {
         // Only encrypt if the secret has changed and is not already encrypted
         if (destination.changed('secretKey') && 
             destination.secretKey && 
-            !isEncrypted(destination.secretKey)) {
-          destination.secretKey = await encryptSecret(destination.secretKey);
+            !cryptoUtil.isEncrypted(destination.secretKey)) {
+          destination.secretKey = cryptoUtil.encrypt(destination.secretKey);
         }
       } catch (error) {
-        logger.error('Error encrypting secret key:', {
-          error: error.message,
-          stack: error.stack,
-          destinationId: destination.id,
-          destinationName: destination.name
-        });
-        // Don't throw - allow the save to continue with original value
+        logger.error('Error encrypting secret key:', error);
       }
     }
   }
 });
 
-/**
- * Check if a text is already encrypted
- * @param {string} text - Text to check
- * @returns {boolean} - Whether the text is encrypted
- */
-function isEncrypted(text) {
-  try {
-    if (!text || typeof text !== 'string') {
-      return false;
-    }
-    
-    return cryptoUtil.isEncrypted(text);
-  } catch (error) {
-    logger.error('Error checking if text is encrypted:', {
-      error: error.message,
-      stack: error.stack
-    });
-    return false; // Fail safely by assuming it's not encrypted
-  }
-}
-
-/**
- * Encrypt a secret value
- * @param {string} text - Text to encrypt
- * @returns {Promise<string>} - Encrypted text
- */
-async function encryptSecret(text) {
-  try {
-    return cryptoUtil.encrypt(text);
-  } catch (error) {
-    logger.error('Error in encryptSecret:', {
-      error: error.message,
-      stack: error.stack
-    });
-    throw error;
-  }
-}
-
-/**
- * Get decrypted secret for the destination
- * @returns {string|null} - Decrypted secret or null
- */
+// Add instance method to get decrypted secret
 Destination.prototype.getDecryptedSecret = function() {
+  if (!this.secretKey) return null;
+  
   try {
-    if (!this.secretKey) {
-      return null;
-    }
-    
     // Only decrypt if it looks encrypted
-    if (isEncrypted(this.secretKey)) {
+    if (cryptoUtil.isEncrypted(this.secretKey)) {
       return cryptoUtil.decrypt(this.secretKey);
     }
-    
-    // Return as-is for backward compatibility
-    return this.secretKey;
+    return this.secretKey; // Return as-is for backward compatibility
   } catch (error) {
-    logger.error('Error decrypting secret key:', {
-      error: error.message,
-      stack: error.stack,
-      destinationId: this.id,
-      destinationName: this.name
-    });
-    return null; // Fail safely by not providing the secret
-  }
-};
-
-/**
- * Create a sanitized version of the destination without sensitive data
- * @returns {Object} - Sanitized destination data
- */
-Destination.prototype.toSafeJSON = function() {
-  const json = this.toJSON();
-  
-  // Remove the secret key from the response
-  if (json.secretKey) {
-    json.hasSecret = true;
-    delete json.secretKey;
-  } else {
-    json.hasSecret = false;
-  }
-  
-  return json;
-};
-
-/**
- * Update the success statistics for the destination
- * @returns {Promise<void>}
- */
-Destination.prototype.recordSuccess = async function() {
-  try {
-    await this.increment('successCount');
-    await this.update({
-      lastSent: new Date(),
-      lastError: null
-    });
-  } catch (error) {
-    logger.error('Error recording destination success:', {
-      error: error.message,
-      stack: error.stack,
-      destinationId: this.id,
-      destinationName: this.name
-    });
-    // Don't throw - stats updates are not critical
-  }
-};
-
-/**
- * Update the failure statistics for the destination
- * @param {string} errorMessage - The error message
- * @returns {Promise<void>}
- */
-Destination.prototype.recordFailure = async function(errorMessage) {
-  try {
-    await this.increment('failureCount');
-    await this.update({
-      lastError: errorMessage
-    });
-  } catch (error) {
-    logger.error('Error recording destination failure:', {
-      error: error.message,
-      stack: error.stack,
-      destinationId: this.id,
-      destinationName: this.name,
-      originalError: errorMessage
-    });
-    // Don't throw - stats updates are not critical
+    logger.error('Error decrypting secret key:', error);
+    return null;
   }
 };
 
